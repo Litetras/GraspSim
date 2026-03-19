@@ -298,7 +298,6 @@ plt.draw()
 plt.waitforbuttonpress()
 plt.close()
 print("open meshcat-server")
-print("open meshcat-server")
 
 # ===================== 5. 相机内参处理 =====================
 intrinsic = camera.get_intrinsics_matrix()
@@ -313,8 +312,18 @@ print("相机内参 fx, fy, cx, cy: ", intrinsic)
 # 原有抓取推理和坐标变换逻辑（保持不变）
 ###########################################################################
 from demogen import demo_variable
-grasp = demo_variable(rgb_data, depth_data, final_mask, intrinsic)
+#grasp = demo_variable(rgb_data, depth_data, final_mask, intrinsic)
+# 测试你想抓取的方向
+target_instruction = "up"  # 或者是 "down"
 
+grasp = demo_variable(
+    rgb_data=rgb_data, 
+    depth_data=depth_data, 
+    mask=final_mask, 
+    intrinsic=intrinsic,
+    text=target_instruction  # <====== 加上这个参数
+)
+##############################################################
 # 坐标变换工具函数
 def get_T(translation, rotation_matrix):
     T = np.eye(4)

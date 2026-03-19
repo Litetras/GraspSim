@@ -319,30 +319,30 @@ def demo_variable(
 
 
 
-    # ===================== 关键修改：可视化优化 =====================
-    # 对无碰撞抓取按分数排序（降序）
-    collision_free_sorted_idx = np.argsort(collision_free_scores)[::-1]
-    sorted_collision_free_grasps = collision_free_grasps[collision_free_sorted_idx]
-    sorted_collision_free_scores = collision_free_scores[collision_free_sorted_idx]
-    
-    # 可视化前100个无碰撞抓取（绿色）
-    top50_num = min(100, len(sorted_collision_free_grasps))
-    for i in range(top50_num):
-        grasp = sorted_collision_free_grasps[i]
-        # 绿色：[0, 255, 0]
-        visualize_grasp(vis, f"collision_free_grasps/top50_{i:03d}", grasp, [0, 255, 0], gripper_name, linewidth=4)
-    
-    # 可视化最优无碰撞抓取（黄色，覆盖top50中的第一个）
-    if len(sorted_collision_free_grasps) > 0:
-        best_grasp_viz = sorted_collision_free_grasps[0]
-        # 黄色：[255, 255, 0]
-        visualize_grasp(vis, "collision_free_grasps/best", best_grasp_viz, [0, 255, 0], gripper_name, linewidth=2)
+        # ===================== 关键修改：可视化优化 =====================
+        # 对无碰撞抓取按分数排序（降序）
+        collision_free_sorted_idx = np.argsort(collision_free_scores)[::-1]
+        sorted_collision_free_grasps = collision_free_grasps[collision_free_sorted_idx]
+        sorted_collision_free_scores = collision_free_scores[collision_free_sorted_idx]
+        
+        # 可视化前100个无碰撞抓取（绿色）
+        top50_num = min(100, len(sorted_collision_free_grasps))
+        for i in range(top50_num):
+            grasp = sorted_collision_free_grasps[i]
+            # 绿色：[0, 255, 0]
+            visualize_grasp(vis, f"collision_free_grasps/top50_{i:03d}", grasp, [0, 255, 0], gripper_name, linewidth=4)
+        
+        # 可视化最优无碰撞抓取（黄色，覆盖top50中的第一个）
+        if len(sorted_collision_free_grasps) > 0:
+            best_grasp_viz = sorted_collision_free_grasps[0]
+            # 黄色：[255, 255, 0]
+            visualize_grasp(vis, "collision_free_grasps/best", best_grasp_viz, [0, 255, 0], gripper_name, linewidth=2)
 
-    # 可视化碰撞抓取（前10个，红色不变）
-    colliding_grasps = grasps_centered[~collision_free_mask]
-    for i, grasp in enumerate(colliding_grasps[:5]):
-        visualize_grasp(vis, f"colliding_grasps/{i:03d}", grasp, [255, 0, 0], gripper_name, linewidth=2)
-    viz_time = time.time() - viz_start
+        # 可视化碰撞抓取（前10个，红色不变）
+        colliding_grasps = grasps_centered[~collision_free_mask]
+        for i, grasp in enumerate(colliding_grasps[:5]):
+            visualize_grasp(vis, f"colliding_grasps/{i:03d}", grasp, [255, 0, 0], gripper_name, linewidth=2)
+        viz_time = time.time() - viz_start
 
 
 
@@ -439,7 +439,7 @@ if __name__ == "__main__":
         # 【改动5：新增】打印完整的4x4齐次变换矩阵
         print(f"抓取位姿（完整4x4齐次变换矩阵）:\n {detected_grasp.pose}")
         print(f"夹爪类型: {detected_grasp.gripper_name}")
-        print(f"无碰撞抓取总数: {len(detected_grasp.all_collision_free_grasps)}")
+        print(f"无碰撞抓取总数: {len(detected_grasp.all_collision_free_grasps)}") # type: ignore
 
     except ValueError as e:
         print(f"Error: {e}")

@@ -72,3 +72,11 @@ tests/
 
 ############
 *.pt
+
+# Data and Experiment Results
+*.npz
+*.npy
+*.pkl
+*.h5
+*.hdf5
+*.csv

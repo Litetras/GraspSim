@@ -231,7 +231,7 @@ plt.close()
 
 # ===================== 4. SAM3文字分割手柄（原有逻辑保留） =====================
 print("开始执行SAM3文字提示分割所有手柄...")
-#HANDLE_PROMPT = "handle"####
+#HANDLE_PROMPT = "handle"#######
 HANDLE_PROMPT = "knife"
 
 # 处理手柄分割

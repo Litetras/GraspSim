@@ -304,11 +304,13 @@ def demo_variable(
     # 14. 可视化（可选）
     if visualize and vis is not None:
         viz_start = time.time()
-        # 可视化场景点云
-        if scene_colors_centered is not None:
-            visualize_pointcloud(vis, "scene_pc", scene_pc_centered, scene_colors_centered, size=0.002)
-        else:
-            visualize_pointcloud(vis, "scene_pc", scene_pc_centered, [128, 128, 128], size=0.002)
+        # ======= 关键修改：把场景点云注释掉，只看物体 =======
+        # # 可视化场景点云
+        # if scene_colors_centered is not None:
+        #     visualize_pointcloud(vis, "scene_pc", scene_pc_centered, scene_colors_centered, size=0.002)
+        # else:
+        #     visualize_pointcloud(vis, "scene_pc", scene_pc_centered, [128, 128, 128], size=0.002)
+    # ====================================================
         # 可视化物体点云
         if object_colors_centered is not None:
             visualize_pointcloud(vis, "object_pc", pc_centered, object_colors_centered, size=0.0025)

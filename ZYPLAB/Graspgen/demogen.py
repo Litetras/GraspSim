@@ -82,18 +82,18 @@ def demo_variable(
     depth_data: np.ndarray,           # 深度图像 (H,W) float32，单位：米（关键！）
     mask: np.ndarray,                 # 分割掩码 (H,W) uint8，目标物体ID=1
     intrinsic: List[float],           # 相机内参 [fx, fy, cx, cy]
-    text: str = "down",                 # <====== 新增这一行：接收语言指令##############
+    text: str = "0",                 # <====== 新增这一行：接收语言指令##############
     # 以下为可选参数（保持原代码默认值，可按需覆盖）
-    gripper_config: str = "/home/zyp/Desktop/zyp_dataset2/tutorial/models/tutorial_model_config.yaml",
+    gripper_config: str = "/home/zyp/pan1/zyp_dataset3/tutorial/models/tutorial_model_config.yaml",####################CORE
     grasp_threshold: float = 0.8,
-    num_grasps: int = 200,
-    return_topk: bool = False,
-    topk_num_grasps: int = -1,
+    num_grasps: int = 300,
+    return_topk: bool = True,
+    topk_num_grasps: int = 10,
     collision_threshold: float = 0,#0.02
     max_scene_points: int = 8192,
     #max_object_points: int = 60000,
     visualize: bool = True,
-    save_results: bool = True,
+    save_results: bool = False,
     output_file: str = "collision_free_grasps_results.npz"
 ) -> Grasp:
     """
@@ -188,13 +188,83 @@ def demo_variable(
     print(f"Point cloud filtering took: {filter_time:.2f}s")
     print(f"Filtered PC: {len(pc_filtered)} points (removed {len(pc_removed)} outliers)")
 
-    # 8. 抓取姿态推理
+    # # 8. 抓取姿态推理
+    # inference_start = time.time()
+    # grasp_sampler = GraspGenSampler(grasp_cfg)
+    
+    # grasps_inferred, grasp_conf_inferred = GraspGenSampler.run_inference(
+    #     pc_filtered,
+    #     grasp_sampler,
+    #     text=text,  # <====== 新增这一行，把文字传给模型
+    #     grasp_threshold=grasp_threshold,
+    #     num_grasps=num_grasps,
+    #     topk_num_grasps=topk_num_grasps,
+    # )
+    # inference_time = time.time() - inference_start
+    # print(f"Grasp inference took: {inference_time:.2f}s")
+
+    # # 校验推理结果
+    # if len(grasps_inferred) == 0:
+    #     raise ValueError("无有效抓取姿态生成！请降低grasp_threshold或检查输入数据")
+
+    # # 转换为numpy（GPU→CPU）
+    # grasp_conf_inferred = grasp_conf_inferred.cpu().numpy()
+    # grasps_inferred = grasps_inferred.cpu().numpy()
+    # grasps_inferred[:, 3, 3] = 1  # 确保齐次矩阵合法【改动3：注释强化】
+    # # ================= 就在这里新增旋转逻辑 ===################为了graspknife-2026.3.18版本适配，强制将所有生成的抓取姿态绕局部Z轴旋转90度（因为模型输出的姿态与实际夹爪方向不一致）
+    # print("\n[注意]：生成的点云抓取姿态已绕局部 Z 轴旋转了 90 度！\n")
+    # import trimesh.transformations as tra
+    # R_90 = tra.rotation_matrix(np.pi / 2, [0, 0, 1])
+    # grasps_inferred = np.array([g @ R_90 for g in grasps_inferred])
+    # # ========================================================
+    # print(f"Inferred {len(grasps_inferred)} grasps (score range: {grasp_conf_inferred.min():.3f}~{grasp_conf_inferred.max():.3f})")
+
+    # # 9. 点云/抓取姿态中心化（统一坐标系）
+    # def process_point_cloud(pc, grasps, grasp_conf, pc_colors=None):
+    #     """内部辅助函数：点云中心化"""
+    #     scores = get_color_from_score(grasp_conf, use_255_scale=True)
+    #     grasps[:, 3, 3] = 1  # 确保齐次矩阵合法
+    #     T_subtract_pc_mean = tra.translation_matrix(-pc.mean(axis=0))
+    #     pc_centered = tra.transform_points(pc, T_subtract_pc_mean)
+    #     grasps_centered = np.array([T_subtract_pc_mean @ g for g in grasps.tolist()])
+        
+    #     pc_colors_centered = pc_colors
+    #     if pc_colors is not None:
+    #         pc_colors_centered = pc_colors.copy().astype(np.float32)
+    #         pc_colors_centered[:, 0] = np.clip(pc_colors_centered[:, 0] * 1.4, 0, 255)
+    #         pc_colors_centered = pc_colors_centered.astype(np.uint8)
+    #     return pc_centered, grasps_centered, scores, T_subtract_pc_mean, pc_colors_centered
+
+    # pc_centered, grasps_centered, scores, T_center, object_colors_centered = process_point_cloud(
+    #     pc_filtered, grasps_inferred, grasp_conf_inferred, object_colors
+    # )
+    # scene_pc_centered = tra.transform_points(scene_pc, T_center)
+
+    # # 场景点云颜色增强（可选）
+    # scene_colors_centered = scene_colors
+    # if scene_colors is not None:
+    #     scene_colors_centered = scene_colors.copy().astype(np.float32)
+    #     scene_colors_centered[:, 0] = np.clip(scene_colors_centered[:, 0] * 1.4, 0, 255)
+    #     scene_colors_centered = scene_colors_centered.astype(np.uint8)
+
+
+
+
+
+# ===================== 8 & 9. 抓取姿态推理与坐标系还原 =====================
     inference_start = time.time()
     grasp_sampler = GraspGenSampler(grasp_cfg)
+    
+    # 🚨 步骤 A：必须在推理前，将点云移回原点 (模型只认识原点附近的坐标)
+    pc_mean = pc_filtered.mean(axis=0)
+    T_center_to_origin = tra.translation_matrix(-pc_mean)
+    pc_centered_input = tra.transform_points(pc_filtered, T_center_to_origin)
+
+    # 🚨 步骤 B：送入网络推理的是中心化后的点云！
     grasps_inferred, grasp_conf_inferred = GraspGenSampler.run_inference(
-        pc_filtered,
+        pc_centered_input,  # <--- 极其关键：必须送入移至原点的点云！
         grasp_sampler,
-        text=text,  # <====== 极其关键：新增这一行，把文字打包成 list 传给模型
+        text=text,          
         grasp_threshold=grasp_threshold,
         num_grasps=num_grasps,
         topk_num_grasps=topk_num_grasps,
@@ -202,49 +272,43 @@ def demo_variable(
     inference_time = time.time() - inference_start
     print(f"Grasp inference took: {inference_time:.2f}s")
 
-    # 校验推理结果
     if len(grasps_inferred) == 0:
         raise ValueError("无有效抓取姿态生成！请降低grasp_threshold或检查输入数据")
 
-    # 转换为numpy（GPU→CPU）
     grasp_conf_inferred = grasp_conf_inferred.cpu().numpy()
     grasps_inferred = grasps_inferred.cpu().numpy()
-    grasps_inferred[:, 3, 3] = 1  # 确保齐次矩阵合法【改动3：注释强化】
-    # ================= 就在这里新增旋转逻辑 ===################为了graspknife-2026.3.18版本适配，强制将所有生成的抓取姿态绕局部Z轴旋转90度（因为模型输出的姿态与实际夹爪方向不一致）
+    grasps_inferred[:, 3, 3] = 1
+
+    # 🚨 步骤 C：把生成的抓取姿态绕局部 Z 轴旋转 90 度（适配夹爪）
     print("\n[注意]：生成的点云抓取姿态已绕局部 Z 轴旋转了 90 度！\n")
-    import trimesh.transformations as tra
     R_90 = tra.rotation_matrix(np.pi / 2, [0, 0, 1])
     grasps_inferred = np.array([g @ R_90 for g in grasps_inferred])
-    # ========================================================
-    print(f"Inferred {len(grasps_inferred)} grasps (score range: {grasp_conf_inferred.min():.3f}~{grasp_conf_inferred.max():.3f})")
-
-    # 9. 点云/抓取姿态中心化（统一坐标系）
-    def process_point_cloud(pc, grasps, grasp_conf, pc_colors=None):
-        """内部辅助函数：点云中心化"""
-        scores = get_color_from_score(grasp_conf, use_255_scale=True)
-        grasps[:, 3, 3] = 1  # 确保齐次矩阵合法
-        T_subtract_pc_mean = tra.translation_matrix(-pc.mean(axis=0))
-        pc_centered = tra.transform_points(pc, T_subtract_pc_mean)
-        grasps_centered = np.array([T_subtract_pc_mean @ g for g in grasps.tolist()])
-        
-        pc_colors_centered = pc_colors
-        if pc_colors is not None:
-            pc_colors_centered = pc_colors.copy().astype(np.float32)
-            pc_colors_centered[:, 0] = np.clip(pc_colors_centered[:, 0] * 1.4, 0, 255)
-            pc_colors_centered = pc_colors_centered.astype(np.uint8)
-        return pc_centered, grasps_centered, scores, T_subtract_pc_mean, pc_colors_centered
-
-    pc_centered, grasps_centered, scores, T_center, object_colors_centered = process_point_cloud(
-        pc_filtered, grasps_inferred, grasp_conf_inferred, object_colors
-    )
-    scene_pc_centered = tra.transform_points(scene_pc, T_center)
-
-    # 场景点云颜色增强（可选）
+    
+    # 🚨 步骤 D：把原点处生成的抓取，反向平移回相机的真实物理空间！
+    T_origin_to_camera = tra.inverse_matrix(T_center_to_origin)
+    grasps_inferred = np.array([T_origin_to_camera @ g for g in grasps_inferred])
+    
+    # 💡 步骤 E：直接让后续变量使用真实的相机空间坐标，废弃冗余的统一坐标系逻辑
+    pc_centered = pc_filtered
+    scene_pc_centered = scene_pc
+    grasps_centered = grasps_inferred
+    object_colors_centered = object_colors
     scene_colors_centered = scene_colors
-    if scene_colors is not None:
-        scene_colors_centered = scene_colors.copy().astype(np.float32)
-        scene_colors_centered[:, 0] = np.clip(scene_colors_centered[:, 0] * 1.4, 0, 255)
-        scene_colors_centered = scene_colors_centered.astype(np.uint8)
+    T_center = np.eye(4) # 将后续的还原矩阵设为单位阵，避免二次移动
+    # =======================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     # 10. 场景点云下采样（加速碰撞检测）
     if len(scene_pc_centered) > max_scene_points:

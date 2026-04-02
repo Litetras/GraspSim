@@ -99,7 +99,7 @@ if best_mask.shape != rgb_data.shape[:2]:
     scale_x = rgb_data.shape[1] / best_mask.shape[1]
     best_mask = zoom(best_mask, (scale_y, scale_x), order=0) > 0.5
 
-final_mask = (best_mask > 0.5).astype(np.uint8)
+final_mask = (best_mask > 0.5).astype(np.uint8) # type: ignore
 
 # plt.figure("SAM3 Best Mask Result", figsize=(12, 6))
 # plt.subplot(121)

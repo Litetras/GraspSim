@@ -85,10 +85,10 @@ def demo_variable(
     text: str = "down",                 # <====== 新增这一行：接收语言指令##############
     # 以下为可选参数（保持原代码默认值，可按需覆盖）
     gripper_config: str = "/home/zyp/Desktop/zyp_dataset7/tutorial/models/tutorial_model_config.yaml",####################CORE
-    grasp_threshold: float = 0.5,
-    num_grasps: int = 100,
+    grasp_threshold: float = 0.8,
+    num_grasps: int = 300,
     return_topk: bool = True,
-    topk_num_grasps: int = 20,
+    topk_num_grasps: int = 300,
     collision_threshold: float = 0.009,#0.02
     max_scene_points: int = 8192,
     #max_object_points: int = 60000,
@@ -247,28 +247,7 @@ def demo_variable(
     #     scene_colors_centered[:, 0] = np.clip(scene_colors_centered[:, 0] * 1.4, 0, 255)
     #     scene_colors_centered = scene_colors_centered.astype(np.uint8)
 
-# ==================== 🚨 极其关键的修复补丁 🚨 ====================
-    # 强制将物体点云采样到与数据集相同的数量（例如 2048，根据你训练时的设定）
-    NUM_TARGET_POINTS = 2048
-    
-    if len(pc_filtered) == 0:
-        raise ValueError("去离群点后点云为空，无法抓取！")
-        
-    if len(pc_filtered) > NUM_TARGET_POINTS:
-        # 下采样：无放回随机抽样
-        indices = np.random.choice(len(pc_filtered), NUM_TARGET_POINTS, replace=False)
-    else:
-        # 补齐：有放回随机抽样（应对物体过小、点数不足的情况）
-        indices = np.random.choice(len(pc_filtered), NUM_TARGET_POINTS, replace=True)
-        
-    pc_filtered = pc_filtered[indices]
-    
-    # 如果后续可视化需要用到物体的颜色，别忘了同步裁切颜色数组！
-    if object_colors is not None:
-        object_colors = object_colors[indices]
-        
-    print(f"Resampled object PC to EXACTLY {len(pc_filtered)} points for model inference.")
-    # ===============================================================
+
 
 
 
@@ -285,7 +264,7 @@ def demo_variable(
     grasps_inferred, grasp_conf_inferred = GraspGenSampler.run_inference(
         pc_centered_input,  # <--- 极其关键：必须送入移至原点的点云！
         grasp_sampler,
-        text=[text],          
+        text=text,          
         grasp_threshold=grasp_threshold,
         num_grasps=num_grasps,
         topk_num_grasps=topk_num_grasps,

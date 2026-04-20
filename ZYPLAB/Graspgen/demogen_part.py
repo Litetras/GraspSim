@@ -83,12 +83,13 @@ def demo_variable(
     mask: np.ndarray,                 # 分割掩码 (H,W) uint8，目标物体ID=1
     intrinsic: List[float],           # 相机内参 [fx, fy, cx, cy]
     text: str = "down",                 # <====== 新增这一行：接收语言指令##############
+    part_mask: Optional[np.ndarray] = None,  # <====== 【新增这一行】
     # 以下为可选参数（保持原代码默认值，可按需覆盖）
-    gripper_config: str = "/home/zyp/pan1/zyp_dataset7（位置+方向）/tutorial/models/tutorial_model_config.yaml",####################CORE
+    gripper_config: str = "/home/zyp/Desktop/zyp_dataset7/tutorial/models/tutorial_model_config.yaml",####################CORE
     grasp_threshold: float = 0.7,
-    num_grasps: int = 100,
+    num_grasps: int = 150,
     return_topk: bool = True,
-    topk_num_grasps: int = 40,
+    topk_num_grasps: int = 80,
     collision_threshold: float = 0.009,#0.02
     max_scene_points: int = 8192,
     #max_object_points: int = 60000,
@@ -145,21 +146,28 @@ def demo_variable(
     if not os.path.exists(gripper_config):
         raise ValueError(f"夹爪配置文件不存在: {gripper_config}")
 
-    # 3. 生成场景/物体点云
+# 3. 生成场景/物体点云
     fx, fy, cx, cy = intrinsic
     pc_start = time.time()
     try:
+        # 获取完整物体和场景的点云
         scene_pc, object_pc, scene_colors, object_colors = depth_and_segmentation_to_point_clouds(
             depth_image=depth_data,
             segmentation_mask=mask,
-            fx=fx,
-            fy=fy,
-            cx=cx,
-            cy=cy,
-            rgb_image=rgb_data,
-            target_object_id=1,  # 目标物体掩码ID固定为1（可按需改为参数）
-            remove_object_from_scene=True,
+            fx=fx, fy=fy, cx=cx, cy=cy,
+            rgb_image=rgb_data, target_object_id=1, remove_object_from_scene=True,
         )
+        
+        # ================== 【新增：获取目标部件的点云】 ==================
+        target_part_pc = None
+        if part_mask is not None:
+            _, target_part_pc, _, _ = depth_and_segmentation_to_point_clouds(
+                depth_image=depth_data,
+                segmentation_mask=part_mask,
+                fx=fx, fy=fy, cx=cx, cy=cy,
+                rgb_image=None, target_object_id=1, remove_object_from_scene=False,
+            )
+        # =================================================================
     except Exception as e:
         raise ValueError(f"点云生成失败: {str(e)}") from e
     pc_creation_time = time.time() - pc_start
@@ -304,11 +312,43 @@ def demo_variable(
     print("\n[注意]：生成的点云抓取姿态已绕局部 Z 轴旋转了 90 度！\n")
     R_90 = tra.rotation_matrix(np.pi / 2, [0, 0, 1])
     grasps_inferred = np.array([g @ R_90 for g in grasps_inferred])
-    
     # 🚨 步骤 D：把原点处生成的抓取，反向平移回相机的真实物理空间！
     T_origin_to_camera = tra.inverse_matrix(T_center_to_origin)
     grasps_inferred = np.array([T_origin_to_camera @ g for g in grasps_inferred])
     
+# ==================== 🚨 核心新增：基于 Franka 爪尖位置的精准过滤 🚨 ====================
+    if target_part_pc is not None and len(target_part_pc) > 0:
+        print("\n执行 SAM 3 爪尖-部件精准空间过滤...")
+        from scipy.spatial import KDTree
+        
+        # 建立目标部件（比如锤柄）的 KD-Tree
+        tree_part = KDTree(target_part_pc)
+        
+        # 1. 提取当前所有候选抓取的基座中心坐标 [M, 3]
+        grasp_bases = grasps_inferred[:, :3, 3]
+        
+        # 2. 提取当前所有候选抓取的 Z 轴（即夹爪前进/插入的方向） [M, 3]
+        grasp_z_axes = grasps_inferred[:, :3, 2]
+        
+        # 3. 核心数学计算：推算真实的爪尖中心点！
+        # Franka 夹爪从基座到指尖的长度约为 0.1 米（10cm）
+        franka_finger_length = 0.10 
+        grasp_fingertips = grasp_bases + grasp_z_axes * franka_finger_length
+        
+        # 4. 计算每个真实的“爪尖点”距离目标部件的最短距离
+        distances, _ = tree_part.query(grasp_fingertips)
+        
+        # 5. 设定阈值：爪尖应该刚好贴在部件表面或深入一点点
+        # 允许 2 厘米 (0.02米) 的点云噪声或抓取容差
+        valid_mask = distances < 0.02 
+        
+        grasps_inferred = grasps_inferred[valid_mask]
+        grasp_conf_inferred = grasp_conf_inferred[valid_mask]
+        print(f"SAM 3 过滤后，仅保留了 {len(grasps_inferred)} 个爪尖精准落在目标部件上的抓取")
+        
+        if len(grasps_inferred) == 0:
+            raise ValueError("过滤后抓取数量为0！请检查SAM3的部件分割是否成功，或尝试把 0.02 的距离容差改大为 0.03。")
+    # =================================================================================
     # 💡 步骤 E：直接让后续变量使用真实的相机空间坐标，废弃冗余的统一坐标系逻辑
     pc_centered = pc_filtered
     scene_pc_centered = scene_pc

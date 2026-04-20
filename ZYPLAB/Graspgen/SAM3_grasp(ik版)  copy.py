@@ -1,24 +1,25 @@
 from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})
+
 from omni.isaac.core.utils.stage import open_stage
 from isaacsim.core.api import World
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.robot.manipulators.examples.franka import Franka
-from isaacsim.robot.manipulators.examples.franka.controllers import PickPlaceController
+
+# ================= 修复点 =================
+# 适配最新 Isaac Sim 的导入路径
+from isaacsim.robot.manipulators.examples.franka import KinematicsSolver
+from omni.isaac.core.utils.types import ArticulationAction
+from omni.isaac.core.utils.rotations import quat_to_rot_matrix, rot_matrix_to_quat
+# ==========================================
+
+import numpy as np
 
 usd_path = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/grasp.usd"
 open_stage(usd_path)
 
 world = World()
 franka: Franka = world.scene.add(Franka(prim_path="/Franka", name="franka")) 
-
-controller = PickPlaceController(
-    name="pick_place_controller",
-    gripper=franka.gripper,
-    robot_articulation=franka,
-    end_effector_initial_height=0.3,  # 机械臂末端执行器初始安全高度
-    events_dt=[0.008, 0.005, 1, 0.01, 0.05, 0.05, 0.0025, 1, 0.008, 0.08], 
-)
 
 # 初始化相机
 from omni.isaac.sensor import Camera
@@ -35,10 +36,14 @@ for i in range(100):
     world.step()
 franka.gripper.set_joint_positions(franka.gripper.joint_opened_positions)
 
+# ================= 修复点 =================
+# 使用新的类名实例化 IK 求解器
+ik_solver = KinematicsSolver(robot_articulation=franka)
+# ==========================================
+
 # ===================== SAM3 初始化及图像处理 =====================
 import sys
 sys.path.append(r'/home/zyp/GraspGen')
-import numpy as np
 import cv2
 import torch
 import matplotlib.pyplot as plt
@@ -50,7 +55,7 @@ from sam3.model.sam3_image_processor import Sam3Processor
 
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans']  
 plt.rcParams['axes.unicode_minus'] = False
-plt.rcParams['toolbar'] = 'None'  # 新增这一行：禁用工具栏以避免 Tkinter 图标缩放 bug
+plt.rcParams['toolbar'] = 'None'  
 plt.ion()  
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -60,19 +65,16 @@ sam3_model = build_sam3_image_model(checkpoint_path=sam3_checkpoint)
 sam3_processor = Sam3Processor(sam3_model)
 
 rgb_data = camera.get_rgb()
-depth_data = camera.get_depth()  # graspgen需要m单位深度图
+depth_data = camera.get_depth()  
 print("深度图形状:", depth_data.shape, "数值范围:", np.min(depth_data), "~", np.max(depth_data))
-
 
 # ===================== 全新逻辑：直接用文字分割置信度最高的刀具 =====================
 PROMPT = "knife"
 print(f"开始执行SAM3文字提示分割，寻找 '{PROMPT}'...")
 
-# 转换图像格式并送入SAM3
 rgb_image = Image.fromarray(rgb_data.astype(np.uint8))
 inference_state_obj = sam3_processor.set_image(rgb_image)
 
-# 用文字提示进行分割
 output_obj = sam3_processor.set_text_prompt(
     state=inference_state_obj,
     prompt=PROMPT
@@ -84,36 +86,32 @@ scores = output_obj["scores"].cpu().numpy()
 if len(masks) == 0:
     raise ValueError(f"❌ SAM3未检测到任何 '{PROMPT}'！请检查相机视野。")
 
-# 提取置信度最高的一个 Mask
 best_idx = np.argmax(scores)
 best_mask = masks[best_idx]
 best_score = scores[best_idx]
 
 print(f"✅ 成功找到置信度最高的 '{PROMPT}'，置信度为: {best_score:.3f}")
 
-# 处理mask维度和尺寸（适配原图尺寸）
 if len(best_mask.shape) == 3:
-    best_mask = best_mask[0]  # 去除batch/channel维度
+    best_mask = best_mask[0]  
 if best_mask.shape != rgb_data.shape[:2]:
     scale_y = rgb_data.shape[0] / best_mask.shape[0]
     scale_x = rgb_data.shape[1] / best_mask.shape[1]
     best_mask = zoom(best_mask, (scale_y, scale_x), order=0) > 0.5
 
-# 转换成 uint8 格式，GraspGen 要求目标掩码值为 1
 final_mask = (best_mask > 0.5).astype(np.uint8) # type: ignore
 
-# 可视化提取结果
-plt.figure("SAM3 Best Mask Result", figsize=(12, 6))
-plt.subplot(121)
-plt.imshow(rgb_data)
-plt.title("Original RGB")
-plt.subplot(122)
-plt.imshow(final_mask, cmap='gray')
-plt.title(f"Best Mask ('{PROMPT}', Score: {best_score:.3f})")
-plt.suptitle("Press Enter to start grasp planning", fontsize=14)
-plt.draw()
-plt.waitforbuttonpress()
-plt.close()
+# plt.figure("SAM3 Best Mask Result", figsize=(12, 6))
+# plt.subplot(121)
+# plt.imshow(rgb_data)
+# plt.title("Original RGB")
+# plt.subplot(122)
+# plt.imshow(final_mask, cmap='gray')
+# plt.title(f"Best Mask ('{PROMPT}', Score: {best_score:.3f})")
+# plt.suptitle("Press Enter to start grasp planning", fontsize=14)
+# plt.draw()
+# plt.waitforbuttonpress()
+# plt.close()
 
 print("open meshcat-server")
 
@@ -123,37 +121,30 @@ fx = float(intrinsic[0, 0])
 fy = float(intrinsic[1, 1])
 cx = float(intrinsic[0, 2])
 cy = float(intrinsic[1, 2])
-intrinsic = [fx, fy, cx, cy]  # 适配graspnet输入格式
+intrinsic = [fx, fy, cx, cy]  
 print("相机内参 fx, fy, cx, cy: ", intrinsic)
 
-
-
 ###########################################################################
-# 原有抓取推理和坐标变换逻辑（保持不变）
+# 抓取推理和坐标变换逻辑
 ###########################################################################
 from demogen import demo_variable
 
-# 测试你想抓取的方向
-target_instruction = "down"  # "down"
+target_instruction = "down"  
 
-# 送入网络进行抓取生成
 grasp = demo_variable(
     rgb_data=rgb_data, 
     depth_data=depth_data, 
     mask=final_mask, 
     intrinsic=intrinsic,
-    text=target_instruction  # 传入语言指令
+    text=target_instruction  
 )
 
-##############################################################
-# 坐标变换工具函数
 def get_T(translation, rotation_matrix):
     T = np.eye(4)
     T[:3, :3] = rotation_matrix
     T[:3, 3] = translation
     return T
 
-# 沿抓取方向前移0.1米的函数
 def move_along_grasp_dir(htm: np.ndarray, distance: float = 0.1) -> np.ndarray:
     grasp_dir = htm[:3, 2]
     grasp_dir_unit = grasp_dir / np.linalg.norm(grasp_dir)
@@ -163,47 +154,73 @@ def move_along_grasp_dir(htm: np.ndarray, distance: float = 0.1) -> np.ndarray:
     new_htm[:3, 3] = new_t
     return new_htm
 
-from omni.isaac.core.utils.rotations import quat_to_rot_matrix, rot_matrix_to_quat
-
-# 1. 获取相机在世界坐标系中的位姿    
 cam_trans, cam_quat = SingleXFormPrim(camera_path).get_world_pose() 
 T_world_cam = get_T(cam_trans, quat_to_rot_matrix(cam_quat))
 
-# 2. 构造相机坐标系下的抓取位姿
 T_cam_grasp = grasp.pose
-
-# 3. 坐标变换：相机坐标系→世界坐标系
 T_world_grasp = T_world_cam @ get_T([0, 0, 0], [[1, 0, 0], [0, -1, 0], [0, 0, -1]]) @ T_cam_grasp @ get_T([0, 0, 0], [[0, 1, 0], [-1, 0, 0], [0, 0, 1]])
 
-# 前移抓取位姿
+# 最终的抓取目标位姿
 T_world_grasp = move_along_grasp_dir(T_world_grasp, distance=0.1)
-print(f"抓取位姿已沿抓取方向前移0.1米")
-
 grasp_pos = T_world_grasp[:3, 3]
 grasp_quat = rot_matrix_to_quat(T_world_grasp[:3, :3])
 
-# 确定抓取点和放置点
-banana_position, banana_orientation = grasp_pos, grasp_quat
-goal_position = banana_position.copy()
-goal_position[0] += 0    
-goal_position[2] += 0.06  
-
-print("抓取点xyz: ", banana_position)
-print("放置点xyz: ", goal_position)
+print("抓取点xyz: ", grasp_pos)
 
 ###########################################################################
-# 机械臂抓取控制（保持不变）
+# 全新机械臂运动控制逻辑 (基于 IK 的平滑插值)
 ###########################################################################
-for i in range(100000):
-    current_joint_positions = franka.get_joint_positions()
-    actions = controller.forward(
-        picking_position=banana_position,
-        placing_position=goal_position,
-        current_joint_positions=current_joint_positions,
-        end_effector_orientation=banana_orientation
+
+# 定义平滑移动函数
+def move_to_pose(target_pos, target_quat, step_count=150):
+    action, success = ik_solver.compute_inverse_kinematics(
+        target_position=target_pos,
+        target_orientation=target_quat
     )
-    franka.apply_action(actions)
-    world.step(render=True) 
+    
+    if success:
+        current_joints = franka.get_joint_positions() # 长度 9 (7臂 + 2手)
+        target_arm_joints = action.joint_positions    # 长度 7 (仅臂)
+        
+        # 补齐 9 自由度：手臂用 IK 算出来的目标位，夹爪保持当前不动
+        target_joints = np.copy(current_joints)
+        target_joints[:7] = target_arm_joints 
+        
+        # 关节空间线性插值
+        for i in range(step_count):
+            alpha = i / step_count
+            interp_joints = current_joints * (1 - alpha) + target_joints * alpha
+            franka.apply_action(ArticulationAction(joint_positions=interp_joints))
+            world.step(render=True)
+    else:
+        print(f"❌ IK 求解失败，目标位姿不可达或处于奇异点！跳过此动作。")
+
+# 1. 计算预抓取点：沿着抓取方向 Z 轴反向退后 10cm
+grasp_dir = T_world_grasp[:3, 2]
+pre_grasp_distance = -0.1  
+pre_grasp_pos = grasp_pos + grasp_dir * pre_grasp_distance
+
+print("\n>>> 步骤 1: 机械臂斜向移动到预抓取姿态...")
+move_to_pose(pre_grasp_pos, grasp_quat, step_count=200)
+
+print(">>> 步骤 2: 顺着抓取角度，直线插入抓取点...")
+move_to_pose(grasp_pos, grasp_quat, step_count=100)
+
+print(">>> 步骤 3: 闭合夹爪...")
+franka.gripper.apply_action(ArticulationAction(joint_positions=franka.gripper.joint_closed_positions))
+# 等待夹爪完全闭合并稳定
+for _ in range(80): 
+    world.step(render=True)
+
+print(">>> 步骤 4: 保持抓取姿态，向上提起...")
+# 计算垂直向上提起的点
+lift_pos = grasp_pos.copy()
+lift_pos[2] += 0.2  
+move_to_pose(lift_pos, grasp_quat, step_count=150)
+
+# 留出一点时间观察最终状态
+for _ in range(100):
+    world.step(render=True)
 
 # 关闭仿真
 simulation_app.close()

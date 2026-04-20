@@ -67,76 +67,66 @@ sam3_processor = Sam3Processor(sam3_model)
 rgb_data = camera.get_rgb()
 depth_data = camera.get_depth()  
 print("深度图形状:", depth_data.shape, "数值范围:", np.min(depth_data), "~", np.max(depth_data))
+# ===================== 全新逻辑：双 Mask 文字分割 =====================
+PROMPT_OBJ = "hammer"    # 用于提取整个物体的轮廓（防碰撞）
+PROMPT_PART = "handle"   # 用于定位你要抓取的目标部件
 
-# ===================== 全新逻辑：直接用文字分割置信度最高的刀具 =====================
-PROMPT = "knife"
-print(f"开始执行SAM3文字提示分割，寻找 '{PROMPT}'...")
-
+print(f"开始执行SAM3文字提示分割...")
 rgb_image = Image.fromarray(rgb_data.astype(np.uint8))
 inference_state_obj = sam3_processor.set_image(rgb_image)
 
-output_obj = sam3_processor.set_text_prompt(
-    state=inference_state_obj,
-    prompt=PROMPT
-)
+# 1. 提取完整物体 Mask
+output_obj = sam3_processor.set_text_prompt(state=inference_state_obj, prompt=PROMPT_OBJ)
+obj_masks = output_obj["masks"].cpu().numpy()
+obj_scores = output_obj["scores"].cpu().numpy()
 
-masks = output_obj["masks"].cpu().numpy()
-scores = output_obj["scores"].cpu().numpy()
+if len(obj_masks) == 0:
+    raise ValueError(f"❌ SAM3未检测到任何 '{PROMPT_OBJ}'！")
+best_obj_mask = obj_masks[np.argmax(obj_scores)]
+if len(best_obj_mask.shape) == 3: best_obj_mask = best_obj_mask[0]  
+if best_obj_mask.shape != rgb_data.shape[:2]:
+    scale_y, scale_x = rgb_data.shape[0]/best_obj_mask.shape[0], rgb_data.shape[1]/best_obj_mask.shape[1]
+    best_obj_mask = zoom(best_obj_mask, (scale_y, scale_x), order=0) > 0.5
+final_obj_mask = (best_obj_mask > 0.5).astype(np.uint8)
 
-if len(masks) == 0:
-    raise ValueError(f"❌ SAM3未检测到任何 '{PROMPT}'！请检查相机视野。")
+# 2. 提取目标部件 Mask (例如: handle)
+output_part = sam3_processor.set_text_prompt(state=inference_state_obj, prompt=PROMPT_PART)
+part_masks = output_part["masks"].cpu().numpy()
+part_scores = output_part["scores"].cpu().numpy()
 
-best_idx = np.argmax(scores)
-best_mask = masks[best_idx]
-best_score = scores[best_idx]
-
-print(f"✅ 成功找到置信度最高的 '{PROMPT}'，置信度为: {best_score:.3f}")
-
-if len(best_mask.shape) == 3:
-    best_mask = best_mask[0]  
-if best_mask.shape != rgb_data.shape[:2]:
-    scale_y = rgb_data.shape[0] / best_mask.shape[0]
-    scale_x = rgb_data.shape[1] / best_mask.shape[1]
-    best_mask = zoom(best_mask, (scale_y, scale_x), order=0) > 0.5
-
-final_mask = (best_mask > 0.5).astype(np.uint8) # type: ignore
-
-# plt.figure("SAM3 Best Mask Result", figsize=(12, 6))
-# plt.subplot(121)
-# plt.imshow(rgb_data)
-# plt.title("Original RGB")
-# plt.subplot(122)
-# plt.imshow(final_mask, cmap='gray')
-# plt.title(f"Best Mask ('{PROMPT}', Score: {best_score:.3f})")
-# plt.suptitle("Press Enter to start grasp planning", fontsize=14)
-# plt.draw()
-# plt.waitforbuttonpress()
-# plt.close()
+if len(part_masks) == 0:
+    print(f"⚠️ 警告: SAM3未检测到 '{PROMPT_PART}'，将退化为全物体抓取。")
+    final_part_mask = None
+else:
+    best_part_mask = part_masks[np.argmax(part_scores)]
+    if len(best_part_mask.shape) == 3: best_part_mask = best_part_mask[0]
+    if best_part_mask.shape != rgb_data.shape[:2]:
+        scale_y, scale_x = rgb_data.shape[0]/best_part_mask.shape[0], rgb_data.shape[1]/best_part_mask.shape[1]
+        best_part_mask = zoom(best_part_mask, (scale_y, scale_x), order=0) > 0.5
+    final_part_mask = (best_part_mask > 0.5).astype(np.uint8)
+    print(f"✅ 成功找到目标部件 '{PROMPT_PART}'，置信度为: {np.max(part_scores):.3f}")
 
 print("open meshcat-server")
 
 # ===================== 相机内参处理 =====================
 intrinsic = camera.get_intrinsics_matrix()
-fx = float(intrinsic[0, 0])
-fy = float(intrinsic[1, 1])
-cx = float(intrinsic[0, 2])
-cy = float(intrinsic[1, 2])
+fx, fy, cx, cy = float(intrinsic[0, 0]), float(intrinsic[1, 1]), float(intrinsic[0, 2]), float(intrinsic[1, 2])
 intrinsic = [fx, fy, cx, cy]  
-print("相机内参 fx, fy, cx, cy: ", intrinsic)
 
 ###########################################################################
 # 抓取推理和坐标变换逻辑
 ###########################################################################
-from demogen import demo_variable
+from demogen_part import demo_variable
 
-target_instruction = "up"  
+target_instruction = "down"  
 
 grasp = demo_variable(
     rgb_data=rgb_data, 
     depth_data=depth_data, 
-    mask=final_mask, 
+    mask=final_obj_mask,         # 传入完整物体 Mask
     intrinsic=intrinsic,
-    text=target_instruction  
+    text=target_instruction,
+    part_mask=final_part_mask    # <==== 新增参数：传入部件 Mask
 )
 
 def get_T(translation, rotation_matrix):

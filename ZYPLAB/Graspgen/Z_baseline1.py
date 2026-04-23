@@ -31,7 +31,7 @@ TEMP_IN = "/tmp/cgn_in.npz"
 TEMP_OUT = "/tmp/cgn_out.npz"
 
 # 场景加载
-usd_path = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/grasp.usd"
+usd_path = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/cam5.usd"
 open_stage(usd_path)
 
 world = World()
@@ -148,6 +148,9 @@ if not res_data['success']:
 T_cam_grasp = res_data['best_grasp']
 print(f"✅ 获取到抓取位姿，得分: {res_data['score']:.4f}")
 
+
+
+
 # ===================== 运动规划与执行 =====================
 def get_T(t, r):
     T = np.eye(4); T[:3, :3] = r; T[:3, 3] = t; return T
@@ -174,6 +177,22 @@ def move_to_pose(target_pos, target_quat, steps=150):
 grasp_pos = T_world_grasp[:3, 3]
 grasp_quat = rot_matrix_to_quat(T_world_grasp[:3, :3])
 grasp_dir = T_world_grasp[:3, 2]
+
+# 🚨 [新增] 终极调试大法：生成幽灵坐标 Marker
+# 红色长方体代表夹爪的正方向 (X轴)。如果它没有对准你想抓的位置，说明矩阵算错了，不用怪 IK！
+from omni.isaac.core.objects import VisualCuboid
+visual_cube = VisualCuboid(
+    prim_path="/World/GraspTargetMarker", 
+    name="grasp_marker",
+    position=grasp_pos,
+    orientation=grasp_quat,
+    scale=np.array([0.05, 0.01, 0.01]), 
+    color=np.array([1.0, 0.0, 0.0])     
+)
+world.scene.add(visual_cube)
+world.step(render=True)
+print("🔍 调试 Marker 已生成，请在画面中检查红色的抓取位姿是否正确对准目标！")
+
 
 print(">>> 步骤: 移动到预抓取点...")
 move_to_pose(grasp_pos - grasp_dir * 0.1, grasp_quat, steps=180)

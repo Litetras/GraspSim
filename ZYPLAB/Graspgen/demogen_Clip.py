@@ -84,12 +84,12 @@ def demo_variable(
     intrinsic: List[float],           # 相机内参 [fx, fy, cx, cy]
     text: str = "down",                 # <====== 新增这一行：接收语言指令##############
     # 以下为可选参数（保持原代码默认值，可按需覆盖）
-    gripper_config: str = "/home/zyp/pan1/zyp_dataset7teacher/tutorial/models/tutorial_model_config.yaml",####################CORE
+    gripper_config: str = "/home/zyp/Desktop/zyp_dataset7（位置+方向）/tutorial/models/tutorial_model_config.yaml",####################CORE
     grasp_threshold: float = 0.7,
-    num_grasps: int = 100,
+    num_grasps: int = 150,
     return_topk: bool = True,
-    topk_num_grasps: int = 40,
-    collision_threshold: float = 0.009,#0.02
+    topk_num_grasps: int = 80,
+    collision_threshold: float = 0.01,#0.02
     max_scene_points: int = 8192,
     #max_object_points: int = 60000,
     visualize: bool = True,

@@ -6,6 +6,43 @@ import numpy as np
 import torch
 import open3d as o3d  # 确保环境中有 open3d
 
+# ===================== 🌟 核心修复：强制矩阵正交化 =====================
+def enforce_orthogonal_grasps(grasps):
+    """
+    通过施密特正交化，修复神经网络输出的畸变旋转矩阵
+    grasps: shape (N, 4, 4)
+    """
+    fixed_grasps = np.copy(grasps)
+    for i in range(len(fixed_grasps)):
+        R = fixed_grasps[i, :3, :3]
+        
+        x_raw = R[:, 0]
+        z_raw = R[:, 2] 
+        
+        z_new = z_raw / np.linalg.norm(z_raw)
+        
+        y_new = np.cross(z_new, x_raw)
+        y_norm = np.linalg.norm(y_new)
+        
+        if y_norm < 1e-6: 
+            fallback_x = np.array([1.0, 0.0, 0.0]) if abs(z_new[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            y_new = np.cross(z_new, fallback_x)
+            y_norm = np.linalg.norm(y_new)
+            
+        y_new = y_new / y_norm
+        x_new = np.cross(y_new, z_new)
+        
+        # 可选：校验并修正为右手坐标系，防止镜像翻转
+        if np.dot(x_new, np.cross(y_new, z_new)) < 0:
+            x_new = -x_new
+
+        fixed_grasps[i, :3, 0] = x_new
+        fixed_grasps[i, :3, 1] = y_new
+        fixed_grasps[i, :3, 2] = z_new
+        
+    return fixed_grasps
+# =======================================================================
+
 # ===================== PyTorch 显存优化 =====================
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
 
@@ -88,25 +125,27 @@ def run_inference(data_path, out_path):
             final_scores = raw_scores[valid_idxs]
             final_openings = raw_openings[valid_idxs]
 
+            # 🛠️ 核心修改：在传给可视化和 GraspGPT 之前，强制正交化！
+            final_grasps = enforce_orthogonal_grasps(final_grasps)
+
             best_idx = np.argmax(final_scores)
             
-            # 🌟 核心修改：调用 Open3D 进行可视化
-            print("\n>>> [Open3D] 正在弹出 3D 可视化窗口...", flush=True)
-            print(">>> 提示：在窗口中按 'q' 键关闭窗口并继续执行 Isaac Sim 动作。", flush=True)
-            
-            # 构造可视化函数需要的格式
-            vis_grasps = {obj_id: final_grasps}
-            vis_scores = {obj_id: final_scores}
-            vis_openings = {obj_id: final_openings}
+            # # 🌟 核心修改：调用 Open3D 进行可视化
+            # print("\n>>> [Open3D] 正在弹出 3D 可视化窗口...", flush=True)
+            # # ... 后续的可视化和 np.savez 代码保持不变 ...
+            # # 构造可视化函数需要的格式
+            # vis_grasps = {obj_id: final_grasps}
+            # vis_scores = {obj_id: final_scores}
+            # vis_openings = {obj_id: final_openings}
 
-            visualize_grasps(
-                pc_full, 
-                vis_grasps, 
-                vis_scores, 
-                plot_opencv_cam=True, 
-                pc_colors=pc_colors,
-                gripper_openings=vis_openings
-            )
+            # visualize_grasps(
+            #     pc_full, 
+            #     vis_grasps, 
+            #     vis_scores, 
+            #     plot_opencv_cam=True, 
+            #     pc_colors=pc_colors,
+            #     gripper_openings=vis_openings
+            # )
 
 
 # 🌟 关键修改：把刀的点云 pc=knife_points 一起打包传给 GraspGPT

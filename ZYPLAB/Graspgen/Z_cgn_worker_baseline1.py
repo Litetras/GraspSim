@@ -63,7 +63,7 @@ def run_inference(data_path, out_path):
             pc_segments=pc_segments, 
             local_regions=True, 
             filter_grasps=True, 
-            forward_passes=5############################
+            forward_passes=3############################
         )
 
     # 4. 后处理与过滤
@@ -90,23 +90,25 @@ def run_inference(data_path, out_path):
 
             best_idx = np.argmax(final_scores)
             
-            # 🌟 核心修改：调用 Open3D 进行可视化
-            print("\n>>> [Open3D] 正在弹出 3D 可视化窗口...", flush=True)
-            print(">>> 提示：在窗口中按 'q' 键关闭窗口并继续执行 Isaac Sim 动作。", flush=True)
-            
-            # 构造可视化函数需要的格式
-            vis_grasps = {obj_id: final_grasps}
-            vis_scores = {obj_id: final_scores}
-            vis_openings = {obj_id: final_openings}
+# 🌟 暂时关闭可视化，代码保留备用
+            # print("\n>>> [Open3D] 正在弹出 3D 可视化窗口...", flush=True)
+            # vis_grasps = {obj_id: final_grasps}
+            # vis_scores = {obj_id: final_scores}
+            # vis_openings = {obj_id: final_openings}
 
-            visualize_grasps(
-                pc_full, 
-                vis_grasps, 
-                vis_scores, 
-                plot_opencv_cam=True, 
-                pc_colors=pc_colors,
-                gripper_openings=vis_openings
-            )
+            # visualize_grasps(
+            #     pc_full, 
+            #     vis_grasps, 
+            #     vis_scores, 
+            #     plot_opencv_cam=True, 
+            #     pc_colors=pc_colors,
+            #     gripper_openings=vis_openings
+            # )
+
+
+
+            # 保存结果返回给 Isaac Sim
+            np.savez(out_path, best_grasp=final_grasps[best_idx], score=final_scores[best_idx], success=True)
 
             # 保存结果返回给 Isaac Sim
             np.savez(out_path, best_grasp=final_grasps[best_idx], score=final_scores[best_idx], success=True)

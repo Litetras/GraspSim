@@ -17,7 +17,7 @@ from PIL import Image
 from scipy.ndimage import zoom  
 
 # ================= 1. 初始化 Isaac Sim 与 场景 =================
-usd_path = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/grasp.usd"
+usd_path = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/cam2.usd"
 open_stage(usd_path)
 
 world = World()
@@ -100,7 +100,7 @@ intrinsic = [float(intrinsic_matrix[0, 0]), float(intrinsic_matrix[1, 1]),
 from demogen_LOD import demo_variable
 
 print("\n🧠 正在使用端到端 Qwen-LoRA 语言条件模型推理抓取姿态+打开meshcat")
-natural_instruction = "grasp the knife to cut"
+natural_instruction = "Grasp the knife to cut."
 print(f"💬 输入自然语言指令: '{natural_instruction}'")
 
 # 注意：为了适配 generator.py 第 522 行的断言：
@@ -113,8 +113,8 @@ grasp = demo_variable(
     mask=final_mask, 
     intrinsic=intrinsic,
     natural_text=[natural_instruction], 
-    strict_text=["dummy"],
-    grasp_threshold=0.05,   # <========== 新增这一行：强制关闭分数阈值拦截！
+    strict_text=["nnn"],
+    grasp_threshold=0.8,   # <========== 新增这一行：强制关闭分数阈值拦截！
     num_grasps=200
 )
 

@@ -40,7 +40,7 @@ args = parser.parse_args()
 trial_id = args.trial
 cam_id   = args.cam_id
 
-IMG_DIR = "/home/zyp/Desktop/eval_results"
+IMG_DIR = "/home/zyp/Desktop/eval_results_hammer"
 os.makedirs(IMG_DIR, exist_ok=True)
 
 # ===================== Isaac Sim 核心初始化 =====================
@@ -73,7 +73,7 @@ TEMP_IN  = "/tmp/cgn_in.npz"
 TEMP_OUT = "/tmp/cgn_out.npz"
 
 # ===================== 场景加载 =====================
-usd_path = f"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/cam{cam_id}.usd"
+usd_path = f"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/hammer_cam{cam_id}.usd"
 print(f">>> [Trial {trial_id}] 加载场景: {usd_path}")
 open_stage(usd_path)
 
@@ -112,7 +112,7 @@ depth_data = camera.get_depth()
 
 rgb_image       = Image.fromarray(rgb_data.astype(np.uint8))
 inference_state = sam3_processor.set_image(rgb_image)
-output_obj      = sam3_processor.set_text_prompt(state=inference_state, prompt="knife")
+output_obj      = sam3_processor.set_text_prompt(state=inference_state, prompt="hammer")###############claw
 masks  = output_obj["masks"].cpu().numpy()
 scores = output_obj["scores"].cpu().numpy()
 

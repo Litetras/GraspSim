@@ -31,7 +31,7 @@ print(f"==================================================\n")
 
 # ===================== Isaac Sim 核心初始化 =====================
 from isaacsim import SimulationApp
-simulation_app = SimulationApp({"headless": False}) # 自动化如果不想看窗口，可改为 True
+simulation_app = SimulationApp({"headless": True}) # 自动化如果不想看窗口，可改为 True
 
 from omni.isaac.core.utils.stage import open_stage
 from isaacsim.core.api import World
@@ -41,7 +41,7 @@ from isaacsim.robot.manipulators.examples.franka import KinematicsSolver
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import quat_to_rot_matrix, rot_matrix_to_quat
 from omni.isaac.sensor import Camera
-
+from omni.isaac.core.objects import VisualCuboid
 # ===================== 路径配置 (带 Trial 隔离的临时文件) =====================
 CONTACT_PYTHON = "/home/zyp/anaconda3/envs/contact/bin/python"
 WORKER_SCRIPT = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline2/cgn_worker_baseline2.py" 
@@ -65,7 +65,7 @@ usd_path = f"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/cam{args.cam_i
 open_stage(usd_path)
 
 world = World()
-franka: Franka = world.scene.add(Franka(prim_path="/Franka", name="franka")) 
+franka: Franka = world.scene.add(Franka(prim_path="/World/Franka", name="franka")) 
 camera = Camera(prim_path="/World/Camera", resolution=(1280, 720))
 camera.initialize()
 camera.add_distance_to_image_plane_to_frame()
@@ -220,7 +220,28 @@ def save_cam_img(save_path):
 grasp_pos = T_world_grasp[:3, 3]
 grasp_quat = rot_matrix_to_quat(T_world_grasp[:3, :3])
 grasp_dir = T_world_grasp[:3, 2]
+# ===================== 🌟 新增：可视化 RGB 坐标轴 Marker =====================
+axis_len   = 0.15   # 坐标轴长度 (15cm)
+axis_thick = 0.005  # 坐标轴粗细
+R_mat = T_world_grasp[:3, :3]
 
+axes = [
+    ("GraspMarker_X", "marker_x", R_mat[:, 0], np.array([axis_len, axis_thick, axis_thick]), np.array([1., 0., 0.])),
+    ("GraspMarker_Y", "marker_y", R_mat[:, 1], np.array([axis_thick, axis_len, axis_thick]), np.array([0., 1., 0.])),
+    ("GraspMarker_Z", "marker_z", R_mat[:, 2], np.array([axis_thick, axis_thick, axis_len]), np.array([0., 0., 1.])),
+]
+for prim_path, name, direction, scale, color in axes:
+    # 让坐标轴从抓取中心点向外延伸
+    center = grasp_pos + direction * (axis_len / 2.0)
+    world.scene.add(VisualCuboid(
+        prim_path=f"/World/{prim_path}", name=name,
+        position=center, orientation=grasp_quat,
+        scale=scale, color=color,
+    ))
+
+world.step(render=True)
+print("🔍 坐标轴 Marker 已生成（蓝色的Z轴应指向夹爪前进/插入的方向）")
+# =========================================================================
 # --- 拍摄第一张：接近抓取点前 ---
 print(">>> 步骤 0: 移动到预抓取点...")
 move_to_pose(grasp_pos - grasp_dir * 0.1, grasp_quat, steps=180)
@@ -228,14 +249,14 @@ save_cam_img(os.path.join(IMG_DIR, f"trial_{args.trial:03d}_cam{args.cam_id}_{ta
 
 # --- 拍摄第二张：闭合并抓稳后 ---
 print(">>> 步骤 1: 插入并抓取...")
-move_to_pose(grasp_pos + grasp_dir * 0.125, grasp_quat, steps=80)
+move_to_pose(grasp_pos + grasp_dir * 0.115, grasp_quat, steps=80)
 franka.gripper.apply_action(ArticulationAction(joint_positions=franka.gripper.joint_closed_positions))
 for _ in range(80): world.step(render=True) # 等待夹爪闭合稳定
 save_cam_img(os.path.join(IMG_DIR, f"trial_{args.trial:03d}_cam{args.cam_id}_{task_name}_step1_grasped.png"))
 
 # --- 拍摄第三张：提起物体后 ---
 print(">>> 步骤 2: 提起物体...")
-move_to_pose(grasp_pos + np.array([0, 0, 0.2]), grasp_quat, steps=120)
+move_to_pose(grasp_pos + np.array([0, 0, 0.15]), grasp_quat, steps=120)#0.15m 提升高度
 for _ in range(120): world.step(render=True)
 save_cam_img(os.path.join(IMG_DIR, f"trial_{args.trial:03d}_cam{args.cam_id}_{task_name}_step2_final.png"))
 

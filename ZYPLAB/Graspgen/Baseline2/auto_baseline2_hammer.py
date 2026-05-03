@@ -5,11 +5,11 @@ import os
 
 TOTAL_TRIALS = 98  # 总共跑 28 次 (7个视角循环4次)
 # 👇 请确保这里的路径指向你修改后的 Isaac Sim Worker 脚本
-WORKER_SCRIPT = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline2/Z_eval_worker_baseline2.py" 
+WORKER_SCRIPT = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline2/Z_eval_worker_baseline2_hammer.py" 
 ISAAC_PYTHON = "/home/zyp/anaconda3/envs/sam3_gen/bin/python"
 
 # 默认的任务指令
-INSTRUCTION = "grasp the knife to cut"
+INSTRUCTION = "grasp the hammer to hit"
 
 print(f"🚀 开始执行 Baseline2 自动化抓取评测，总计 {TOTAL_TRIALS} 轮...")
 

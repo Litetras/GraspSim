@@ -56,8 +56,8 @@ def demo_variable(
     # 【关键修改】：接收从 Isaac Sim 传进来的两个 text
     natural_text: List[str] = None,   
     strict_text: List[str] = None,    
-    gripper_config: str = "/home/zyp/Desktop/zyp_dataset7teacher/tutorial/models/tutorial_model_config.yaml",
-    grasp_threshold: float = 0.2,
+    gripper_config: str = "/home/zyp/pan1/#LODGrasp核心权重/zyp_dataset7teacher/tutorial/models/tutorial_model_config.yaml",
+    grasp_threshold: float = 0.6,
     num_grasps: int = 300,##########
     return_topk: bool = True,
     topk_num_grasps: int = 200,
@@ -106,7 +106,7 @@ def demo_variable(
     pc_removed = pc_removed.numpy()
     filter_time = time.time() - filter_start
 
-    NUM_TARGET_POINTS = 4096
+    NUM_TARGET_POINTS = 4096#2048
     if len(pc_filtered) == 0:
         raise ValueError("去离群点后点云为空，无法抓取！")
         

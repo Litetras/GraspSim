@@ -66,11 +66,12 @@ from omni.isaac.core.utils.rotations import quat_to_rot_matrix, rot_matrix_to_qu
 from omni.isaac.sensor import Camera
 from omni.isaac.core.objects import VisualCuboid
 
-# ===================== 路径配置 =====================
-CONTACT_PYTHON = "/home/zyp/anaconda3/envs/contact/bin/python"
-WORKER_SCRIPT  = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline1/cgn_worker_baseline1.py"
-TEMP_IN  = "/tmp/cgn_in.npz"
-TEMP_OUT = "/tmp/cgn_out.npz"
+# ===================== 路径配置 (已修改为 ShapeGrasp) =====================
+# 假设你的 shapegrasp 环境叫 shapegrasp，请根据实际 conda 环境名称修改
+SG_PYTHON = "/home/zyp/anaconda3/envs/shapegrasp/bin/python" 
+WORKER_SCRIPT  = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline4/sg_worker.py"
+TEMP_IN  = "/tmp/sg_in.npz"
+TEMP_OUT = "/tmp/sg_out.npz"
 
 # ===================== 场景加载 =====================
 usd_path = f"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib/cam{cam_id}.usd"
@@ -149,77 +150,93 @@ import gc; gc.collect()
 torch.cuda.synchronize()
 torch.cuda.empty_cache()
 
-# ===================== 调用 CGN 后端 =====================
+# ===================== 调用 ShapeGrasp 后端 =====================
 my_env = os.environ.copy()
 for key in ["PYTHONPATH", "LD_LIBRARY_PATH"]:
     if key in my_env:
         del my_env[key]
 my_env["PYTHONUNBUFFERED"] = "1"
+my_env["PWD"] = "/home/zyp/pan1/ShapeGrasp" 
+
+SG_BIN_DIR = os.path.dirname(SG_PYTHON) 
+my_env["PATH"] = SG_BIN_DIR + os.pathsep + my_env.get("PATH", "")
 
 if os.path.exists(TEMP_OUT):
     os.remove(TEMP_OUT)
+# ... 后面照旧是 subprocess.run ...
 
-vis_file_path = os.path.join(IMG_DIR, f"trial_{trial_id:03d}_cam{cam_id}_cgn_vis.npz")
-
+print(">>> 正在调用 ShapeGrasp 大模型推理，请稍候...")
+# 注意：cwd参数确保了 worker 脚本的运行目录在 ShapeGrasp 根目录
 result = subprocess.run(
-    [CONTACT_PYTHON, WORKER_SCRIPT,
+    [SG_PYTHON, WORKER_SCRIPT,
      "--in_data",  TEMP_IN,
-     "--out_data", TEMP_OUT,
-     "--vis_data", vis_file_path],
-    env=my_env
+     "--out_data", TEMP_OUT],
+    env=my_env,
+    cwd="/home/zyp/pan1/ShapeGrasp" 
 )
 
 if result.returncode != 0 or not os.path.exists(TEMP_OUT):
-    print("❌ CGN 后端运行失败")
+    print("❌ ShapeGrasp 后端运行失败")
     simulation_app.close(); sys.exit(1)
 
 res_data = np.load(TEMP_OUT)
 if not res_data['success']:
-    print("❌ CGN 未能生成有效抓取")
+    print("❌ ShapeGrasp 未能生成有效抓取")
     simulation_app.close(); sys.exit(1)
 
-T_cam_grasp = res_data['best_grasp']
-print(f"✅ 获取到抓取位姿，得分: {res_data['score']:.4f}")
+# 获取 ShapeGrasp 结果：[Angle, U, V, Depth]
+sg_result = res_data['grasp_2d']
+angle_deg = sg_result[0]
+u = sg_result[1]
+v = sg_result[2]
+z_depth = sg_result[3]
 
-# ===================== 坐标变换（最终正确版）=====================
+print(f"✅ 获取到抓取位姿，像素坐标 (U:{u:.1f}, V:{v:.1f}), 深度:{z_depth:.3f}, 旋转角:{angle_deg}°")
+
+# ===================== 坐标变换（2D 转 3D）=====================
 # ┌─────────────────────────────────────────────────────────────┐
 # │  🔧 可调参数区：只需要改这里                                 │
 # │                                                             │
 # │  GRASP_Z_DEG    : 绕进近轴修正夹爪朝向                      │
-# │                   先试 90，不对试 -90 或 180                 │
+# │                   先试 0，不对试 90, -90, 或 180            │
 # │                                                             │
 # │  EE_FINGER_OFFSET: 手腕 panda_hand 到指尖的距离(m)           │
 # │                   Franka 默认约 0.105，可微调               │
 # └─────────────────────────────────────────────────────────────┘
-GRASP_Z_DEG      = 0       # 👈 调夹爪朝向：90 / -90 / 180 / 0
-#EE_FINGER_OFFSET = 0.105#0.105    # 👈 调指尖补偿距离，单位 m
+GRASP_Z_DEG      = 0       
+# EE_FINGER_OFFSET = 0.105 
 
-# ── helper ────────────────────────────────────────────────────
+# 1. 像素转相机坐标系 (X_c, Y_c, Z_c)
+fx, fy = cam_K[0, 0], cam_K[1, 1]
+cx, cy = cam_K[0, 2], cam_K[1, 2]
+
+X_c = (u - cx) * z_depth / fx
+Y_c = (v - cy) * z_depth / fy
+Z_c = z_depth
+
+# 构建 ShapeGrasp 生成的初始相机系 4x4 矩阵
+T_cam_grasp = np.eye(4)
+T_cam_grasp[:3, 3] = [X_c, Y_c, Z_c]
+# 夹爪在 2D 下通常是朝下的，只旋转 Yaw
+R_grasp = R.from_euler('Z', angle_deg, degrees=True).as_matrix()
+T_cam_grasp[:3, :3] = R_grasp
+
 def to_T44(R3=None, t3=None):
     T = np.eye(4)
     if R3 is not None: T[:3, :3] = R3
     if t3 is not None: T[:3,  3] = t3
     return T
 
-# ── 相机世界位姿（重新读，保证最新）─────────────────────────────
+# 重新读相机最新位姿
 cam_trans, cam_quat_curr = SingleXFormPrim("/World/Camera").get_world_pose()
 T_world_cam = to_T44(quat_to_rot_matrix(cam_quat_curr), cam_trans)
 
-# ── 三步变换 ─────────────────────────────────────────────────
-# 1. T_world_cam: 相机在世界系的位姿
-# 2. FLIP_CAM: Isaac 相机 -> OpenCV 相机
-# 3. T_cam_grasp: CGN 原始输出
+# 消除 Isaac 默认相机和 OpenCV相机的差异
 FLIP_CAM = np.diag([1., -1., -1.])
 
-# 4. 核心修正：把 CGN 的夹爪约定（X轴开合）转为 Franka 约定（Y轴开合）
-# 必须先绕 Z 轴转 90 度（或 -90 度，具体取决于你的 Franka 模型导入版本）
-R_cgn_to_franka = R.from_euler('Z', 90, degrees=True).as_matrix()
-
-# 5. 你的手动微调：基于修正后的姿态，再去转你想要的 GRASP_Z_DEG
+# 微调旋转
 R_user_tune = R.from_euler('Z', GRASP_Z_DEG, degrees=True).as_matrix()
-
-# 将两个旋转组合 (先转 R_cgn_to_franka，再转 R_user_tune)
-fix_rot = R_user_tune @ R_cgn_to_franka 
+fix_rot = R_user_tune 
 
 T_world_grasp = (T_world_cam
                  @ to_T44(FLIP_CAM)     
@@ -229,8 +246,6 @@ T_world_grasp = (T_world_cam
 grasp_pos  = T_world_grasp[:3, 3]
 grasp_quat = rot_matrix_to_quat(T_world_grasp[:3, :3])
 grasp_dir  = T_world_grasp[:3, 2]      # 进近方向依然是 Z
-
-
 
 # ===================== 可视化：RGB 坐标轴 Marker =====================
 axis_len   = 0.15
@@ -256,16 +271,13 @@ print("🔍 坐标轴 Marker 已生成（蓝色Z轴应指向物体内部）")
 # ===================== 运动控制 =====================
 from scipy.spatial.transform import Slerp
 
-# ===================== 简单稳健的运动控制 (关节空间插值) =====================
 def move_to_pose(target_pos, target_quat, steps=150, label=""):
     """只计算终点 IK，在关节空间进行线性插值，绝对稳健"""
     action, success = ik_solver.compute_inverse_kinematics(target_pos, target_quat)
     
     if success:
         curr_joints = franka.get_joint_positions()
-        # 复制当前关节，防止夹爪状态被意外覆盖
         target_joints = np.copy(curr_joints) 
-        # 只更新前 7 个机械臂关节的指令
         target_joints[:7] = action.joint_positions[:7] 
         
         for i in range(1, steps + 1):
@@ -287,12 +299,12 @@ def save_cam_img(filename):
 # ===================== 运动规划与执行 =====================
 
 # 步骤 0：移动到悬停点
-hover_pos = grasp_pos - grasp_dir * 0.10
+hover_pos = grasp_pos - grasp_dir * 0.12
 print(f">>> 步骤 0: 移动到悬停点 {np.round(hover_pos, 3)}...")
 move_to_pose(hover_pos, grasp_quat, steps=150, label=" [悬停]")
 
 # 步骤 1：进近并抓取
-insert_pos = grasp_pos + grasp_dir * 0.115 # 先到达一个稍微靠近物体的点，增加成功率
+insert_pos = grasp_pos + grasp_dir * 0.02 # 先到达一个稍微靠近物体的点，增加成功率###################
 print(f"\n>>> 步骤 1: 进近抓取 → {np.round(insert_pos, 3)}")
 save_cam_img(os.path.join(IMG_DIR, f"trial_{trial_id:03d}_cam{cam_id}_step0_before_grasp.png"))
 move_to_pose(insert_pos, grasp_quat, steps=100, label=" [进近]")
@@ -318,12 +330,9 @@ save_cam_img(os.path.join(IMG_DIR, f"trial_{trial_id:03d}_cam{cam_id}_step2_fina
 ee_final, _ = franka.end_effector.get_world_pose()
 print(f"\n{'═'*55}")
 print(f"✅ Trial {trial_id} / 视角 {cam_id} 完成")
-print(f"  CGN 抓取目标:       {np.round(grasp_pos, 3)}")
-#print(f"  IK 发送目标 (指尖): {np.round(grasp_pos_cmd, 3)}")
-print(f"  末端最终位置:       {np.round(ee_final, 3)}")
+print(f"  ShapeGrasp 抓取目标:   {np.round(grasp_pos, 3)}")
+print(f"  末端最终位置:         {np.round(ee_final, 3)}")
 print(f"{'═'*55}")
 print()
-#print("  如果夹爪还偏 90°：修改 GRASP_Z_DEG（当前值 =", GRASP_Z_DEG, "）")
-#print("  如果抓取深度不对：修改 EE_FINGER_OFFSET（当前值 =", EE_FINGER_OFFSET, "m）")
 
 simulation_app.close()

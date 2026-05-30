@@ -56,7 +56,8 @@ def demo_variable(
     # 【关键修改】：接收从 Isaac Sim 传进来的两个 text
     natural_text: List[str] = None,   
     strict_text: List[str] = None,    
-    gripper_config: str = "/home/zyp/pan1/#LODGrasp核心权重/zyp_dataset7teacher/tutorial/models/tutorial_model_config.yaml",
+    gripper_config: str = "/home/zyp/Desktop/zyp_dataset7_clip/tutorial/models/tutorial_model_config.yaml",
+    grasp_sampler: Optional[GraspGenSampler] = None,
     grasp_threshold: float = 0.6,
     num_grasps: int = 300,##########
     return_topk: bool = True,
@@ -90,14 +91,25 @@ def demo_variable(
         raise ValueError(f"点云生成失败: {str(e)}") from e
     pc_creation_time = time.time() - pc_start
 
-    grasp_cfg = load_grasp_cfg(gripper_config)
+    if grasp_sampler is None:
+        grasp_cfg = load_grasp_cfg(gripper_config)
+        grasp_sampler = GraspGenSampler(grasp_cfg)
+    else:
+        grasp_cfg = grasp_sampler.cfg
+
     gripper_name = grasp_cfg.data.gripper_name
     gripper_info = get_gripper_info(gripper_name)
     gripper_collision_mesh = gripper_info.collision_mesh
 
     vis = None
     if visualize:
+        print(
+            "[LODGrasp] 如果程序停在这里，请在另一个终端打开 MeshCat: "
+            "`meshcat-server`，或把 demo_variable(..., visualize=False) 关闭可视化。",
+            flush=True,
+        )
         vis = create_visualizer()
+        print("[LODGrasp] MeshCat visualizer connected.", flush=True)
 
     filter_start = time.time()
     object_pc_torch = torch.from_numpy(object_pc)
@@ -120,7 +132,6 @@ def demo_variable(
         object_colors = object_colors[indices]
 
     inference_start = time.time()
-    grasp_sampler = GraspGenSampler(grasp_cfg)
     
     pc_mean = pc_filtered.mean(axis=0)
     T_center_to_origin = tra.translation_matrix(-pc_mean)

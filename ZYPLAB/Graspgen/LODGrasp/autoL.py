@@ -29,11 +29,13 @@ sys.path.append(r'/home/zyp/GraspGen')
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 from demogen_LOD import demo_variable
+from grasp_gen.grasp_server_LOD import GraspGenSampler, load_grasp_cfg
 
 # ================= 全局参数配置 =================
 SCENE_DIR = r"/home/zyp/SO-ARM100/Simulation/SO101/so101_new_calib"
 IMG_DIR = "batch_test_results"
 os.makedirs(IMG_DIR, exist_ok=True)
+GRIPPER_CONFIG = "/home/zyp/Desktop/zyp_dataset7_clip/tutorial/models/tutorial_model_config.yaml"
 
 PROMPT = "knife"
 task_name = "knife_cut"
@@ -70,6 +72,17 @@ sam3_model = build_sam3_image_model(checkpoint_path="/home/zyp/sam3/zypmodel/sam
 sam3_processor = Sam3Processor(sam3_model)
 # 初始化后立刻放入 CPU 内存，不占用宝贵的 GPU 显存
 sam3_model.to('cpu') 
+
+grasp_cfg = load_grasp_cfg(GRIPPER_CONFIG)
+grasp_sampler = None
+
+def get_grasp_sampler():
+    global grasp_sampler
+    if grasp_sampler is None:
+        print("🚀 正在首次加载 GraspGen/Qwen 模型，后续 trial 将复用该 sampler...")
+        grasp_sampler = GraspGenSampler(grasp_cfg)
+        print("✅ GraspGen/Qwen sampler 已加载完成。")
+    return grasp_sampler
 
 
 # ================= 批量测试主循环 =================
@@ -184,6 +197,8 @@ for cam_id in range(1, 8):#########################3567
                 intrinsic=intrinsic,
                 natural_text=[natural_instruction], 
                 strict_text=["nnn"],
+                gripper_config=GRIPPER_CONFIG,
+                grasp_sampler=get_grasp_sampler(),
                 grasp_threshold=0.9, 
                 num_grasps=200
             )

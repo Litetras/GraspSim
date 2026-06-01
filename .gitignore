@@ -42,6 +42,7 @@ docker/.container.cfg
 **/.neptune/*
 docker/artifacts/
 *.tmp
+**/ZYPLAB/Graspgen/LODGrasp/batch_test_results_refactored/*
 
 # Doc Outputs
 **/docs/_build/*

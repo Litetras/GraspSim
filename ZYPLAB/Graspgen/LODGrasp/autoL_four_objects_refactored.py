@@ -10,6 +10,26 @@ from lod_eval_common import LodEvalConfig, LodEvalTask, run_lod_eval
 
 
 OBJECT_CONFIGS = {
+    "knife": {
+        "prompt": "knife",
+        "tasks": (
+            LodEvalTask("knife_cut", "Grasp the knife to cut."),
+            LodEvalTask("knife_pass", "Grasp the knife to pass."),
+        ),
+        "scene_pattern": "cam{cam_id}_r.usd",
+        "scene_id_pattern": "cam{cam_id}",
+        "grasp_threshold": 0.6,
+    },
+    "hammer": {
+        "prompt": "hammer",
+        "tasks": (
+            LodEvalTask("hammer_strike", "Grasp the hammer to strike."),
+            LodEvalTask("hammer_pull", "Grasp the hammer to pull."),
+        ),
+        "scene_pattern": "hammer_cam{cam_id}.usd",
+        "scene_id_pattern": "cam{cam_id}",
+        "grasp_threshold": 0.6,
+    },
     "brush": {
         "prompt": "brush",
         "tasks": (
@@ -23,12 +43,12 @@ OBJECT_CONFIGS = {
     "drill": {
         "prompt": "drill",
         "tasks": (
-            LodEvalTask("drill_operate", "Grasp the drill to operate."),
+            LodEvalTask("drill_operate", "Hold the upper drill handle for drilling."),
             LodEvalTask("drill_pass", "Grasp the drill to pass."),
         ),
         "scene_pattern": "drill_cam{cam_id}.usd",
         "scene_id_pattern": "drill_cam{cam_id}",
-        "grasp_threshold": 0.45,############
+        "grasp_threshold": 0.6,############
     },
     "mug": {
         "prompt": "mug",
@@ -55,7 +75,7 @@ OBJECT_CONFIGS = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run LODGrasp IsaacSim evaluations for brush, drill, mug, and spoon."
+        description="Run LODGrasp IsaacSim evaluations for knife, hammer, brush, drill, mug, and spoon."
     )
     parser.add_argument(
         "--objects",
@@ -125,7 +145,7 @@ def parse_args():
     parser.add_argument(
         "--num-grasps",
         type=int,
-        default=120,
+        default=150,
         help="Number of grasp candidates generated per inference. Lower values reduce memory/time.",
     )
     parser.add_argument(
@@ -277,6 +297,17 @@ def review_image_path(args, script_path: Path, object_name: str, task: LodEvalTa
     return root / object_name / task.task_name / "review" / filename
 
 
+def missing_review_paths(args, script_path: Path, object_name: str, tasks, cam_ids, trial_ids):
+    missing = []
+    for task in tasks:
+        for cam_id in cam_ids:
+            for trial_id in trial_ids:
+                path = review_image_path(args, script_path, object_name, task, cam_id, trial_id)
+                if not path.exists():
+                    missing.append(path)
+    return missing
+
+
 def child_log_path(args, script_path: Path, object_name: str, task_text: str, cam_text: str, trial_text: str) -> Path:
     log_root = resolve_output_root(args.log_dir, script_path)
     log_root.mkdir(parents=True, exist_ok=True)
@@ -384,11 +415,19 @@ def run_parent(args) -> int:
         else:
             object_name, tasks, cam_ids, trial_ids = chunk
 
-        if args.skip_existing and len(tasks) == 1 and len(cam_ids) == 1 and len(trial_ids) == 1:
-            existing_review = review_image_path(args, script_path, object_name, tasks[0], cam_ids[0], trial_ids[0])
-            if existing_review.exists():
-                print(f"⏭️ 父进程跳过已完成 trial: {existing_review}")
+        if args.skip_existing:
+            missing_reviews = missing_review_paths(args, script_path, object_name, tasks, cam_ids, trial_ids)
+            total_reviews = len(tasks) * len(cam_ids) * len(trial_ids)
+            if not missing_reviews:
+                task_text = ",".join(task.task_name for task in tasks)
+                cam_text = ",".join(str(cam_id) for cam_id in cam_ids)
+                print(
+                    f"⏭️ 父进程整块跳过: object={object_name} "
+                    f"task={task_text} cam={cam_text} reviews={total_reviews}/{total_reviews}"
+                )
                 continue
+            if len(missing_reviews) < total_reviews:
+                print(f"↪️ 仅补跑缺失 review: {len(missing_reviews)}/{total_reviews} missing")
 
         cmd = [
             sys.executable,
@@ -469,7 +508,7 @@ def run_parent(args) -> int:
     if failed_objects:
         print(f"⚠️  总评估结束，但这些物体失败: {', '.join(failed_objects)}")
     else:
-        print("🎉 四个物体评估全部完成。")
+        print("🎉 选定物体评估全部完成。")
     print(f"📁 输出根目录: {args.output_root}")
     print(f"⏱️ 总耗时: {elapsed / 60.0:.1f} min")
     print("=" * 72)

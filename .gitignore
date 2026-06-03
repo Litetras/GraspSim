@@ -42,8 +42,9 @@ docker/.container.cfg
 **/.neptune/*
 docker/artifacts/
 *.tmp
+**/ZYPLAB/Graspgen/Baseline2/batch_test_results_refactored/*
 **/ZYPLAB/Graspgen/LODGrasp/batch_test_results_refactored/*
-
+**/ZYPLAB/Graspgen/Baseline1/batch_test_results_refactored/*
 # Doc Outputs
 **/docs/_build/*
 **/generated/*
@@ -82,3 +83,5 @@ tests/
 *.hdf5
 *.csv
 ZYPLAB/section2/graspnet-baseline
+ZYPLAB/Graspgen/Baseline2/batch_test_results_refactored/baseline2_debug_one_trial_views/brush/brush_clean/review/trial_001_brush_cam1_brush_clean_review.jpg
+ZYPLAB/Graspgen/Baseline2/batch_test_results_refactored/baseline2_debug_one_trial_views/brush/brush_clean/trial_results.jsonl

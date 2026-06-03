@@ -18,6 +18,13 @@ class LodEvalTask:
 
 
 @dataclass(frozen=True)
+class EvalGraspResult:
+    pose: np.ndarray
+    score: float
+    all_collision_free_grasps: Optional[Sequence[np.ndarray]] = None
+
+
+@dataclass(frozen=True)
 class LodEvalConfig:
     prompt: str
     tasks: Sequence[LodEvalTask]
@@ -31,6 +38,30 @@ class LodEvalConfig:
     gripper_config: str = "/home/zyp/Desktop/zyp_dataset7_clip/tutorial/models/tutorial_model_config.yaml"
     sam3_checkpoint: str = "/home/zyp/sam3/zypmodel/sam3/sam3.pt"
     graspgen_repo: str = "/home/zyp/GraspGen"
+
+    inference_backend: str = "lodgrasp"
+    contact_graspnet_python: str = "/home/zyp/anaconda3/envs/contact/bin/python"
+    contact_graspnet_worker: str = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline1/cgn_worker_baseline1_refactored.py"
+    contact_graspnet_timeout: int = 420
+    contact_graspnet_forward_passes: int = 3
+    contact_graspnet_contact_threshold: float = 0.15
+    graspgpt_python: str = "/home/zyp/anaconda3/envs/graspgpt/bin/python"
+    graspgpt_worker: str = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline2/graspgpt_worker_baseline2.py"
+    graspgpt_timeout: int = 900
+    graspgpt_task_map: Optional[dict] = None
+    graspgpt_object_map: Optional[dict] = None
+    grim_python: str = "/home/zyp/pan1/conda/envs/grim/bin/python"
+    grim_worker: str = "/home/zyp/IsaacLab/ZYPLAB/Graspgen/Baseline5/grim_worker_baseline5.py"
+    grim_timeout: int = 1200
+    grim_root: str = "/home/zyp/pan1/GRIM"
+    grim_task_map: Optional[dict] = None
+    grim_object_map: Optional[dict] = None
+    grim_max_points: int = 22000
+    grim_dino_long_side: int = 700
+    grim_feature_mode: str = "auto"
+    grim_dinov2_repo: str = ""
+    grim_dinov2_model: str = "dinov2_vitl14"
+    grim_dinov2_allow_download: bool = False
 
     headless: bool = True
     enable_meshcat: bool = False
@@ -51,6 +82,7 @@ class LodEvalConfig:
     unload_sam3_after_mask: bool = False
     sam3_subprocess: bool = False
     lift_success_height_delta: float = 0.03
+    close_distance_along_grasp: float = 0.03
     settle_steps: int = 100
     pregrasp_steps: int = 180
     insert_steps: int = 80
@@ -112,6 +144,32 @@ def move_along_grasp_dir(htm: np.ndarray, distance: float = 0.1) -> np.ndarray:
     new_htm[:3, :3] = htm[:3, :3]
     new_htm[:3, 3] = htm[:3, 3] + grasp_dir_unit * distance
     return new_htm
+
+
+def orthonormalize_rotation(rotation: np.ndarray) -> np.ndarray:
+    """Project a 3x3 matrix to the closest right-handed rotation matrix."""
+    u, _, vt = np.linalg.svd(rotation)
+    rotation_ortho = u @ vt
+    if np.linalg.det(rotation_ortho) < 0:
+        u[:, -1] *= -1.0
+        rotation_ortho = u @ vt
+    return rotation_ortho
+
+
+def rotation_from_x_axis(direction: np.ndarray) -> np.ndarray:
+    """Build a marker orientation whose local X axis points along direction."""
+    x_axis = np.asarray(direction, dtype=float)
+    norm = np.linalg.norm(x_axis)
+    if norm < 1e-8:
+        return np.eye(3)
+    x_axis = x_axis / norm
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(x_axis, reference))) > 0.95:
+        reference = np.array([0.0, 1.0, 0.0])
+    y_axis = np.cross(reference, x_axis)
+    y_axis = y_axis / np.linalg.norm(y_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    return np.column_stack([x_axis, y_axis, z_axis])
 
 
 def to_jsonable(value):
@@ -370,8 +428,15 @@ def run_lod_eval(config: LodEvalConfig):
         else:
             from sam3.model_builder import build_sam3_image_model
             from sam3.model.sam3_image_processor import Sam3Processor
-        from demogen_LOD import demo_variable
-        from grasp_gen.grasp_server_LOD import GraspGenSampler, load_grasp_cfg
+        if config.inference_backend == "lodgrasp":
+            from demogen_LOD import demo_variable
+            from grasp_gen.grasp_server_LOD import GraspGenSampler, load_grasp_cfg
+        elif config.inference_backend in ("contact_graspnet", "graspgpt", "grim"):
+            demo_variable = None
+            GraspGenSampler = None
+            load_grasp_cfg = None
+        else:
+            raise ValueError(f"Unsupported inference_backend: {config.inference_backend}")
 
         os.makedirs(config.img_dir, exist_ok=True)
 
@@ -422,23 +487,339 @@ def run_lod_eval(config: LodEvalConfig):
                 ]
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
-                subprocess.run(cmd, check=True, cwd=lod_dir, env=env)
+                result = subprocess.run(
+                    cmd,
+                    cwd=lod_dir,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if result.returncode != 0:
+                    print("⚠️ SAM3 subprocess failed. Last output:")
+                    for line in (result.stdout or "").splitlines()[-30:]:
+                        print(f"  {line}")
+                    result.check_returncode()
                 output = np.load(output_path)
                 masks = output["masks"]
                 scores = output["scores"]
                 output.close()
                 return masks, scores
 
-        grasp_cfg = load_grasp_cfg(config.gripper_config)
+        grasp_cfg = load_grasp_cfg(config.gripper_config) if config.inference_backend == "lodgrasp" else None
         grasp_sampler = None
 
         def get_grasp_sampler():
             nonlocal grasp_sampler
+            if config.inference_backend != "lodgrasp":
+                raise RuntimeError("GraspGen sampler is only available for the lodgrasp backend.")
             if grasp_sampler is None:
                 print("🚀 正在首次加载 GraspGen/Qwen 模型，后续 trial 将复用该 sampler...")
                 grasp_sampler = GraspGenSampler(grasp_cfg)
                 print("✅ GraspGen/Qwen sampler 已加载完成。")
             return grasp_sampler
+
+        def run_contact_graspnet_inference(depth_data, intrinsic_matrix, final_mask, rgb_data):
+            with tempfile.TemporaryDirectory(prefix="baseline1_cgn_") as tmp_dir:
+                input_path = os.path.join(tmp_dir, "cgn_input.npz")
+                output_path = os.path.join(tmp_dir, "cgn_output.npz")
+                depth_clean = np.nan_to_num(depth_data, posinf=0.0, neginf=0.0)
+                depth_clean = np.clip(depth_clean, 0.0, 5.0).astype(np.float32)
+                cam_k = intrinsic_matrix[:3, :3].astype(np.float32)
+                np.savez(
+                    input_path,
+                    depth=depth_clean,
+                    K=cam_k,
+                    segmap=final_mask.astype(np.uint8),
+                    rgb=rgb_data[:, :, :3].astype(np.uint8),
+                )
+
+                cmd = [
+                    config.contact_graspnet_python,
+                    config.contact_graspnet_worker,
+                    "--in_data",
+                    input_path,
+                    "--out_data",
+                    output_path,
+                    "--forward_passes",
+                    str(config.contact_graspnet_forward_passes),
+                    "--contact_threshold",
+                    str(config.contact_graspnet_contact_threshold),
+                ]
+                env = os.environ.copy()
+                for key in ("PYTHONPATH", "LD_LIBRARY_PATH"):
+                    env.pop(key, None)
+                env["PYTHONUNBUFFERED"] = "1"
+
+                print("[Baseline1/CGN] 调用 Contact-GraspNet 后端...")
+                result = subprocess.run(
+                    cmd,
+                    env=env,
+                    cwd=os.path.dirname(config.contact_graspnet_worker),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=config.contact_graspnet_timeout,
+                )
+                worker_output = result.stdout or ""
+                key_lines = [
+                    line for line in worker_output.splitlines()
+                    if any(token in line for token in ("✅", "❌", "⚠️", "[Baseline1-CGN] 使用", "candidates="))
+                ]
+                for line in key_lines[-8:]:
+                    print(line)
+                if result.returncode != 0 or not os.path.exists(output_path):
+                    if not key_lines and worker_output.strip():
+                        print("⚠️ Contact-GraspNet 后端最后日志:")
+                        for line in worker_output.splitlines()[-30:]:
+                            print(f"  {line}")
+                    raise RuntimeError(f"Contact-GraspNet 后端失败，returncode={result.returncode}")
+
+                output = np.load(output_path, allow_pickle=False)
+                try:
+                    success = bool(output["success"].item())
+                    if not success:
+                        reason = str(output["reason"].item()) if "reason" in output.files else "无有效抓取姿态生成"
+                        raise RuntimeError(reason)
+                    pose = np.asarray(output["best_grasp"], dtype=float)
+                    score = float(output["score"].item()) if np.ndim(output["score"]) == 0 else float(output["score"])
+                    candidate_count = int(output["candidate_count"].item()) if "candidate_count" in output.files else 1
+                    candidate_count = max(candidate_count, 1)
+                    return EvalGraspResult(
+                        pose=pose,
+                        score=score,
+                        all_collision_free_grasps=[pose] * candidate_count,
+                    )
+                finally:
+                    output.close()
+
+        def run_graspgpt_inference(depth_data, intrinsic_matrix, final_mask, rgb_data, task):
+            with tempfile.TemporaryDirectory(prefix="baseline2_graspgpt_") as tmp_dir:
+                input_path = os.path.join(tmp_dir, "cgn_input.npz")
+                cgn_output_path = os.path.join(tmp_dir, "cgn_candidates.npz")
+                gpt_output_path = os.path.join(tmp_dir, "graspgpt_output.npz")
+
+                depth_clean = np.nan_to_num(depth_data, posinf=0.0, neginf=0.0)
+                depth_clean = np.clip(depth_clean, 0.0, 5.0).astype(np.float32)
+                cam_k = intrinsic_matrix[:3, :3].astype(np.float32)
+                np.savez(
+                    input_path,
+                    depth=depth_clean,
+                    K=cam_k,
+                    segmap=final_mask.astype(np.uint8),
+                    rgb=rgb_data[:, :, :3].astype(np.uint8),
+                )
+
+                env = os.environ.copy()
+                for key in ("PYTHONPATH", "LD_LIBRARY_PATH"):
+                    env.pop(key, None)
+                env["PYTHONUNBUFFERED"] = "1"
+
+                cgn_cmd = [
+                    config.contact_graspnet_python,
+                    config.contact_graspnet_worker,
+                    "--in_data",
+                    input_path,
+                    "--out_data",
+                    cgn_output_path,
+                ]
+                print("[Baseline2/CGN] 生成候选抓取...")
+                cgn_result = subprocess.run(
+                    cgn_cmd,
+                    env=env,
+                    cwd=os.path.dirname(config.contact_graspnet_worker),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=config.contact_graspnet_timeout,
+                )
+                cgn_output = cgn_result.stdout or ""
+                cgn_key_lines = [
+                    line for line in cgn_output.splitlines()
+                    if any(token in line for token in ("✅", "❌", "⚠️", "成功保存", "候选抓取"))
+                ]
+                for line in cgn_key_lines[-8:]:
+                    print(line)
+                if cgn_result.returncode != 0 or not os.path.exists(cgn_output_path):
+                    if not cgn_key_lines and cgn_output.strip():
+                        print("⚠️ Baseline2 CGN 后端最后日志:")
+                        for line in cgn_output.splitlines()[-30:]:
+                            print(f"  {line}")
+                    raise RuntimeError(f"Baseline2 CGN 后端失败，returncode={cgn_result.returncode}")
+
+                cgn_data = np.load(cgn_output_path, allow_pickle=True)
+                try:
+                    if not bool(cgn_data["success"].item()):
+                        raise RuntimeError("CGN 未能生成有效抓取")
+                    candidate_count = int(len(cgn_data["grasps"])) if "grasps" in cgn_data.files else 0
+                finally:
+                    cgn_data.close()
+
+                task_map = config.graspgpt_task_map or {}
+                object_map = config.graspgpt_object_map or {}
+                gpt_task = task_map.get(task.task_name, task.task_name)
+                gpt_object = object_map.get(task.task_name, object_map.get(config.prompt, config.prompt))
+
+                gpt_cmd = [
+                    config.graspgpt_python,
+                    config.graspgpt_worker,
+                    "--in_data",
+                    cgn_output_path,
+                    "--out_data",
+                    gpt_output_path,
+                    "--task",
+                    gpt_task,
+                    "--obj_class",
+                    gpt_object,
+                ]
+                print(f"[Baseline2/GraspGPT] 任务映射: {task.task_name} -> task='{gpt_task}', obj='{gpt_object}'")
+                gpt_result = subprocess.run(
+                    gpt_cmd,
+                    env=env,
+                    cwd=os.path.dirname(config.graspgpt_worker),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=config.graspgpt_timeout,
+                )
+                gpt_output = gpt_result.stdout or ""
+                gpt_key_lines = [
+                    line for line in gpt_output.splitlines()
+                    if any(token in line for token in ("✅", "❌", "⚠️", "最佳匹配概率", "GraspGPT", "匹配到"))
+                ]
+                for line in gpt_key_lines[-12:]:
+                    print(line)
+                if gpt_result.returncode != 0 or not os.path.exists(gpt_output_path):
+                    if not gpt_key_lines and gpt_output.strip():
+                        print("⚠️ GraspGPT 后端最后日志:")
+                        for line in gpt_output.splitlines()[-30:]:
+                            print(f"  {line}")
+                    raise RuntimeError(f"GraspGPT 后端失败，returncode={gpt_result.returncode}")
+
+                gpt_data = np.load(gpt_output_path, allow_pickle=False)
+                try:
+                    if not bool(gpt_data["success"].item()):
+                        raise RuntimeError("GraspGPT 未能筛选出有效抓取")
+                    pose = np.asarray(gpt_data["best_grasp"], dtype=float)
+                    score = float(gpt_data["score"].item()) if np.ndim(gpt_data["score"]) == 0 else float(gpt_data["score"])
+                    return EvalGraspResult(
+                        pose=pose,
+                        score=score,
+                        all_collision_free_grasps=[pose] * max(candidate_count, 1),
+                    )
+                finally:
+                    gpt_data.close()
+
+        def run_grim_inference(depth_data, intrinsic_matrix, final_mask, rgb_data, task):
+            with tempfile.TemporaryDirectory(prefix="baseline5_grim_") as tmp_dir:
+                input_path = os.path.join(tmp_dir, "grim_input.npz")
+                output_path = os.path.join(tmp_dir, "grim_output.npz")
+
+                depth_clean = np.nan_to_num(depth_data, posinf=0.0, neginf=0.0)
+                depth_clean = np.clip(depth_clean, 0.0, 5.0).astype(np.float32)
+                cam_k = intrinsic_matrix[:3, :3].astype(np.float32)
+                np.savez(
+                    input_path,
+                    depth=depth_clean,
+                    K=cam_k,
+                    segmap=final_mask.astype(np.uint8),
+                    rgb=rgb_data[:, :, :3].astype(np.uint8),
+                )
+
+                task_map = config.grim_task_map or {}
+                object_map = config.grim_object_map or {}
+                grim_task = task_map.get(task.task_name, task.task_name)
+                grim_object = object_map.get(task.task_name, object_map.get(config.prompt, config.prompt))
+
+                cmd = [
+                    config.grim_python,
+                    config.grim_worker,
+                    "--in_data",
+                    input_path,
+                    "--out_data",
+                    output_path,
+                    "--task_name",
+                    task.task_name,
+                    "--memory_obj",
+                    grim_object,
+                    "--memory_task",
+                    grim_task,
+                    "--grim_root",
+                    config.grim_root,
+                    "--max_points",
+                    str(config.grim_max_points),
+                    "--dino_long_side",
+                    str(config.grim_dino_long_side),
+                    "--feature_mode",
+                    config.grim_feature_mode,
+                    "--dinov2_model",
+                    config.grim_dinov2_model,
+                ]
+                if config.grim_dinov2_repo:
+                    cmd.extend(["--dinov2_repo", config.grim_dinov2_repo])
+                if config.grim_dinov2_allow_download:
+                    cmd.append("--dinov2_allow_download")
+                env = os.environ.copy()
+                for key in ("PYTHONPATH", "LD_LIBRARY_PATH"):
+                    env.pop(key, None)
+                env["PYTHONUNBUFFERED"] = "1"
+                env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+                print(f"[Baseline5/GRIM] 任务映射: {task.task_name} -> obj='{grim_object}', task='{grim_task}'")
+                result = subprocess.run(
+                    cmd,
+                    env=env,
+                    cwd=os.path.dirname(config.grim_worker),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=config.grim_timeout,
+                )
+                worker_output = result.stdout or ""
+                key_lines = [
+                    line for line in worker_output.splitlines()
+                    if any(token in line for token in ("✅", "❌", "⚠️", "GRIM", "Target cloud", "Best alignment", "ICP", "Top orientations"))
+                ]
+                for line in key_lines[-16:]:
+                    print(line)
+                if result.returncode != 0 or not os.path.exists(output_path):
+                    if not key_lines and worker_output.strip():
+                        print("⚠️ GRIM 后端最后日志:")
+                        for line in worker_output.splitlines()[-40:]:
+                            print(f"  {line}")
+                    raise RuntimeError(f"GRIM 后端失败，returncode={result.returncode}")
+
+                output = np.load(output_path, allow_pickle=False)
+                try:
+                    success = bool(output["success"].item())
+                    if not success:
+                        reason = str(output["reason"].item()) if "reason" in output.files else "GRIM 未能输出有效抓取"
+                        raise RuntimeError(reason)
+                    pose = np.asarray(output["best_grasp"], dtype=float)
+                    score = float(output["score"].item()) if np.ndim(output["score"]) == 0 else float(output["score"])
+                    if "all_grasps" in output.files:
+                        all_grasps_arr = np.asarray(output["all_grasps"], dtype=float)
+                        all_grasps = [all_grasps_arr[i] for i in range(len(all_grasps_arr))]
+                    else:
+                        candidate_count = int(output["candidate_count"].item()) if "candidate_count" in output.files else 1
+                        all_grasps = [pose] * max(candidate_count, 1)
+                    return EvalGraspResult(
+                        pose=pose,
+                        score=score,
+                        all_collision_free_grasps=all_grasps,
+                    )
+                finally:
+                    output.close()
 
         for cam_id in config.cam_ids:
             scene_name = config.scene_pattern.format(cam_id=cam_id)
@@ -461,9 +842,10 @@ def run_lod_eval(config: LodEvalConfig):
             camera.add_distance_to_image_plane_to_frame()
             camera.add_rgb_to_frame()
 
-            marker_x = world.scene.add(VisualCuboid(prim_path="/World/marker_x", name="marker_x", scale=np.array([config.axis_len, config.axis_thick, config.axis_thick]), color=np.array([1., 0., 0.])))
-            marker_y = world.scene.add(VisualCuboid(prim_path="/World/marker_y", name="marker_y", scale=np.array([config.axis_thick, config.axis_len, config.axis_thick]), color=np.array([0., 1., 0.])))
-            marker_z = world.scene.add(VisualCuboid(prim_path="/World/marker_z", name="marker_z", scale=np.array([config.axis_thick, config.axis_thick, config.axis_len]), color=np.array([0., 0., 1.])))
+            axis_scale = np.array([config.axis_len, config.axis_thick, config.axis_thick])
+            marker_x = world.scene.add(VisualCuboid(prim_path="/World/marker_x", name="marker_x", scale=axis_scale, color=np.array([1., 0., 0.])))
+            marker_y = world.scene.add(VisualCuboid(prim_path="/World/marker_y", name="marker_y", scale=axis_scale, color=np.array([0., 1., 0.])))
+            marker_z = world.scene.add(VisualCuboid(prim_path="/World/marker_z", name="marker_z", scale=axis_scale, color=np.array([0., 0., 1.])))
             marker_x.set_visibility(False)
             marker_y.set_visibility(False)
             marker_z.set_visibility(False)
@@ -554,7 +936,7 @@ def run_lod_eval(config: LodEvalConfig):
                         "lift_mode": "world_z",
                     },
                 ]
-                close_pos = grasp_pos + grasp_dir * 0.03
+                close_pos = grasp_pos + grasp_dir * config.close_distance_along_grasp
                 last_fail_stage = None
 
                 for strategy in strategies:
@@ -676,21 +1058,45 @@ def run_lod_eval(config: LodEvalConfig):
                         float(intrinsic_matrix[1, 2]),
                     ]
 
-                    print(f"[{time.strftime('%H:%M:%S')}] 🧠 运行大模型推理...")
+                    print(f"[{time.strftime('%H:%M:%S')}] 🧠 运行算法推理 ({config.inference_backend})...")
                     try:
-                        grasp = demo_variable(
-                            rgb_data=rgb_data,
-                            depth_data=depth_data,
-                            mask=final_mask,
-                            intrinsic=intrinsic,
-                            natural_text=[task.natural_instruction],
-                            strict_text=["nnn"],
-                            gripper_config=config.gripper_config,
-                            grasp_sampler=get_grasp_sampler(),
-                            grasp_threshold=config.grasp_threshold,
-                            num_grasps=config.num_grasps,
-                            visualize=config.enable_meshcat,
-                        )
+                        if config.inference_backend == "lodgrasp":
+                            grasp = demo_variable(
+                                rgb_data=rgb_data,
+                                depth_data=depth_data,
+                                mask=final_mask,
+                                intrinsic=intrinsic,
+                                natural_text=[task.natural_instruction],
+                                strict_text=["nnn"],
+                                gripper_config=config.gripper_config,
+                                grasp_sampler=get_grasp_sampler(),
+                                grasp_threshold=config.grasp_threshold,
+                                num_grasps=config.num_grasps,
+                                visualize=config.enable_meshcat,
+                            )
+                        elif config.inference_backend == "contact_graspnet":
+                            grasp = run_contact_graspnet_inference(
+                                depth_data=depth_data,
+                                intrinsic_matrix=intrinsic_matrix,
+                                final_mask=final_mask,
+                                rgb_data=rgb_data,
+                            )
+                        elif config.inference_backend == "graspgpt":
+                            grasp = run_graspgpt_inference(
+                                depth_data=depth_data,
+                                intrinsic_matrix=intrinsic_matrix,
+                                final_mask=final_mask,
+                                rgb_data=rgb_data,
+                                task=task,
+                            )
+                        else:
+                            grasp = run_grim_inference(
+                                depth_data=depth_data,
+                                intrinsic_matrix=intrinsic_matrix,
+                                final_mask=final_mask,
+                                rgb_data=rgb_data,
+                                task=task,
+                            )
                     except Exception as e:
                         print(f"⚠️ 推理失败 ({e})，跳过该 trial。")
                         record = make_base_record(config, task, cam_id, trial, fail_reason=f"inference_failed: {e}")
@@ -709,18 +1115,44 @@ def run_lod_eval(config: LodEvalConfig):
                     cam_trans, cam_quat = SingleXFormPrim(camera_path).get_world_pose()
                     T_world_cam = get_T(cam_trans, quat_to_rot_matrix(cam_quat))
 
+                    if config.inference_backend == "contact_graspnet":
+                        # CGN 的夹爪坐标约定和 LODGrasp 不同：这里沿用旧 Baseline1
+                        # 脚本验证过的 Rz(+90) 修正，只把算法输出接到同一套执行流程。
+                        grasp_frame_fix = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
+                    elif config.inference_backend == "grim":
+                        # GRIM worker 输出的是 OpenCV camera frame 下的 TaskGrasp transferred pose。
+                        # 这里复用 LODGrasp 的抓取坐标系约定：蓝色 Z 轴表示插入/闭合方向，
+                        # 避免 marker 坐标轴和 Franka 执行方向不一致。
+                        grasp_frame_fix = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]]
+                    else:
+                        grasp_frame_fix = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]]
+
                     T_world_grasp = (
                         T_world_cam
                         @ get_T([0, 0, 0], [[1, 0, 0], [0, -1, 0], [0, 0, -1]])
                         @ grasp.pose
-                        @ get_T([0, 0, 0], [[0, 1, 0], [-1, 0, 0], [0, 0, 1]])
+                        @ get_T([0, 0, 0], grasp_frame_fix)
                     )
-                    T_world_grasp = move_along_grasp_dir(T_world_grasp, distance=0.1)
+                    if config.inference_backend == "lodgrasp":
+                        T_world_grasp = move_along_grasp_dir(T_world_grasp, distance=0.1)
+                    else:
+                        # 中文说明：Contact-GraspNet 输出的 pose 已经是待执行的抓取位姿，
+                        # 旧 Baseline1 也没有再沿进近轴额外平移 10cm。若复用 LODGrasp
+                        # 的 10cm 位姿补偿，水平/向下抓取会被推到桌面以下，导致 close
+                        # 阶段 IK 必然失败。因此 Baseline1 只共享仿真执行流程，不共享
+                        # LODGrasp 专用的生成器位姿补偿。
+                        pass
+
+                    # 中文说明：GRIM 的 ICP 对齐矩阵可能携带尺度项，导致 3x3 部分不再是
+                    # 纯旋转矩阵。如果直接转 quaternion，会让可视化坐标轴不相交，也会把
+                    # close/IK 距离按尺度放大。执行前只正交化旋转，不改变抓取位置。
+                    T_world_grasp[:3, :3] = orthonormalize_rotation(T_world_grasp[:3, :3])
 
                     grasp_pos = T_world_grasp[:3, 3]
                     grasp_quat = rot_matrix_to_quat(T_world_grasp[:3, :3])
                     grasp_dir = T_world_grasp[:3, 2]
-                    close_pos = grasp_pos + grasp_dir * 0.03
+                    grasp_dir = grasp_dir / np.linalg.norm(grasp_dir)
+                    close_pos = grasp_pos + grasp_dir * config.close_distance_along_grasp
 
                     R_mat = T_world_grasp[:3, :3]
                     axes_data = [
@@ -729,8 +1161,10 @@ def run_lod_eval(config: LodEvalConfig):
                         (marker_z, R_mat[:, 2]),
                     ]
                     for marker, direction in axes_data:
+                        direction = direction / np.linalg.norm(direction)
                         center = grasp_pos + direction * (config.axis_len / 2.0)
-                        marker.set_world_pose(position=center, orientation=grasp_quat)
+                        axis_quat = rot_matrix_to_quat(rotation_from_x_axis(direction))
+                        marker.set_world_pose(position=center, orientation=axis_quat)
                         marker.set_visibility(True)
                     world.step(render=config.render_motion_steps)
                     print("🔍 坐标轴 Marker 已更新显示 (蓝色Z轴指向插入方向)")
